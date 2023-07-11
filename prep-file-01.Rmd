@@ -1,0 +1,1253 @@
+---
+title: "PoNet Stochastic Actor Oriented Models Prep"
+subtitle: 'This file preps the data for RSiena models, and creates the descriptive tables'
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+\newpage
+
+# Data prep
+
+## Load libraries
+
+Load libraries
+```{r message = FALSE, warning = FALSE}
+library(tidyverse)  # data management
+library(lubridate)  # date variables
+library(RSiena)     # siena models
+library(igraph)     # network descriptives
+library(visNetwork) # network visualization
+library(Hmisc)      # categorizing data
+```
+
+## Read in force data
+
+```{r}
+force <- read.csv("data/ponet_xpd_force19_22.csv") # force data 2019-2022
+```
+
+Gen force variables
+```{r}
+# gen year variable for year force incident occurred
+force$offense.date <- ymd(force$offense.date)
+force$offense.year <- year(force$offense.date)
+
+# gen firearm-variable
+force <- force %>% 
+  mutate(gun_force = ifelse(method.used == "firearm" |
+                                method.used == "firearm/taser", 1, 0))
+
+# gen taser-variable
+force <- force %>%
+  mutate(taser_force = ifelse(method.used == "taser" |
+                              method.used == "asp/taser" |
+                              method.used == "taser/asp" |
+                              method.used == "firearm/taser" |
+                              method.used == "oc/taser" |
+                              method.used == "taser/oc" |
+                              method.used == "physical/taser" |
+                              method.used == "Physical/taser/asp" |
+                              method.used == "physical/asp/taser" |
+                              method.used == "physical/oc/taser", 1, 0))
+
+# divide data into 2021 and 2022
+force21 <- force %>% filter(offense.year == "2021")
+force22 <- force %>% filter(offense.year == "2022")
+
+# gen number force incidents annually
+force21 <- force21 %>% group_by(uid) %>% mutate(nforce1 = n_distinct(incident.no, na.rm = T))
+force22 <- force22 %>% group_by(uid) %>% mutate(nforce2 = n_distinct(incident.no, na.rm = T))
+
+# gen number firearm incidents annually
+force21 <- force21 %>% group_by(uid) %>% mutate(ngun_force1 = sum(gun_force, na.rm = T))
+force22 <- force22 %>% group_by(uid) %>% mutate(ngun_force2 = sum(gun_force, na.rm = T))
+
+# gen number taser incidents annually
+force21 <- force21 %>% group_by(uid) %>% mutate(ntaser_force1 = sum(taser_force, na.rm = T))
+force22 <- force22 %>% group_by(uid) %>% mutate(ntaser_force2 = sum(taser_force, na.rm = T))
+
+# select relevant columns
+force21 <- force21 %>% select(offense.year, uid, nforce1, ngun_force1, ntaser_force1)
+force22 <- force22 %>% select(offense.year, uid, nforce2, ngun_force2, ntaser_force2)
+
+# collapse to only include one officer per year
+force21 <- force21 %>%
+  group_by(uid) %>%
+  slice(1) %>%
+  ungroup()
+
+force22 <- force22 %>%
+  group_by(uid) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+\newpage
+
+## Read in complaint data
+
+Gen complaint - office of professional standards (ops) variables - up until 2021
+```{r}
+# read in ops data
+ops <- read.csv("data/ponet_xpd_ops.csv") # ops data
+
+# gen year variable for year ops incident occurred (only using date from first incident within complaint)
+ops$idate <- ymd(ops$idate_1)
+ops$iyear <- year(ops$idate)
+
+# remove ops incidents from 2022 >= (covariate is only measured at wave 1)
+ops <- ops %>%
+  filter(iyear < "2022")
+
+# gen number ops incidents variable
+ops <- ops %>%
+  group_by(uid) %>%
+  mutate(nops1 = n_distinct(iid))
+
+# collapse to officer-level selecting only relevant vars for analysis
+ops <- ops %>%
+  select(uid, nops1) %>%
+  group_by(uid) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+Gen complaint variables - up until 2022
+```{r}
+# read in ops data
+ops22 <- read.csv("data/ponet_xpd_ops.csv") # ops data
+
+# gen year variable for year ops incident occurred (only using date from first incident within complaint)
+ops22$idate <- ymd(ops22$idate_1)
+ops22$iyear <- year(ops22$idate)
+
+# gen number ops incidents variable
+ops22 <- ops22 %>%
+  group_by(uid) %>%
+  mutate(nops2 = n_distinct(iid))
+
+# collapse to officer-level selecting only relevant vars for analysis
+ops22 <- ops22 %>%
+  select(uid, nops2) %>%
+  group_by(uid) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+\newpage
+
+## Read in survey data
+
+Import data
+```{r}
+df21   <- read.csv("data/ponet_xpd_2021.csv")      # survey data 2021
+df22   <- read.csv("data/ponet_xpd_2022.csv")      # survey data 2022
+```
+
+Clean dept asst and rank data for 2022 for officers missing this info on survey 2022 - taken from roster Nov 2022
+```{r}
+# if rank is missing replace w/ dept_rank
+df21 <- df21 %>%
+  mutate(rank = ifelse(is.na(rank), dept_rank21, rank))
+df22 <- df22 %>%
+  mutate(rank = ifelse(is.na(rank), dept_rank22, rank))
+
+# if asst1 is missing replace w/ dept_asst22
+df21 <- df21 %>%
+  mutate(asst1 = ifelse(is.na(asst1), dept_asst21, asst1))
+df22 <- df22 %>%
+  mutate(asst1 = ifelse(is.na(asst1), dept_asst22, asst1))
+
+# if street1 is missing replace w/ dept_street22
+df21 <- df21 %>%
+  mutate(street1 = ifelse(is.na(street1), dept_street21, street1))
+df22 <- df22 %>%
+  mutate(street1 = ifelse(is.na(street1), dept_street22, street1))
+
+# if proactive1 is missing replace w/ dept_pro22
+df21 <- df21 %>%
+  mutate(proactive1 = ifelse(is.na(proactive1), dept_pro21, proactive1))
+df22 <- df22 %>%
+  mutate(proactive1 = ifelse(is.na(proactive1), dept_pro22, proactive1))
+```
+
+Merge w1 and w2 data (retain respondents in both waves - even if present in a single wave)
+```{r}
+df <- full_join(df21, df22, by = c("uid"))
+```
+
+Gen indicator if vector referring to w1 or w2 survey
+```{r} 
+colnames(df) <- gsub("\\.x$",'.1',colnames(df))
+colnames(df) <- gsub("\\.y$",'.2',colnames(df))
+```
+
+\newpage
+
+## Merge survey data and force data
+```{r}
+df <- left_join(df, force21, by = c("wave.1" = "offense.year", "uid" = "uid"))  # merge 2021 force data
+df <- left_join(df, force22, by = c("wave.2" = "offense.year", "uid" = "uid"))  # merge 2022 force data
+```
+
+If nforce, ngun_force, or ntaser_force are missing in df, replace w/ 0 (i.e. no force reports)
+```{r}
+df <- df %>%
+  mutate(nforce1       = ifelse(is.na(nforce1), 0, nforce1),
+         nforce2       = ifelse(is.na(nforce2), 0, nforce2),
+         ngun_force1   = ifelse(is.na(ngun_force1), 0, ngun_force1),
+         ngun_force2   = ifelse(is.na(ngun_force2), 0, ngun_force2),
+         ntaser_force1 = ifelse(is.na(ntaser_force1), 0, ntaser_force1),
+         ntaser_force2 = ifelse(is.na(ntaser_force2), 0, ntaser_force2),)
+```
+
+## Merge survey data and complaint data
+```{r}
+df <- left_join(df, ops, by = c("uid"))
+df <- left_join(df, ops22, by = c("uid"))
+```
+
+Use nops1 (ops reports) unless officer missing ops reports, then use survey data
+```{r}
+df <- df %>%
+  mutate(nops = ifelse(is.na(nops.1), nops1, nops.1))
+df <- df %>%
+  mutate(nops2 = ifelse(is.na(nops.2), nops2, nops.2))
+```
+
+\newpage
+
+## Gen variables for analysis
+
+Merge weapon data from force reports w/ survey data (i.e. if report discharging firearm in one or the other (don't sum up across))
+```{r}
+# take highest firearm use across force data and survey data
+df <- df %>%
+  mutate(gun_fire.1 = ifelse(ngun_force1 > gun_fire.1, ngun_force1, gun_fire.1),
+         gun_fire.2 = ifelse(ngun_force2 > gun_fire.2, ngun_force2, gun_fire.2))
+
+# take highest taser use across force data and survey data
+df <- df %>%
+  mutate(taser_fire.1 = ifelse(ntaser_force1 > taser_fire.1, ntaser_force1, taser_fire.1),
+         taser_fire.2 = ifelse(ntaser_force2 > taser_fire.2, ntaser_force2, taser_fire.2))
+```
+
+
+Gen outcome measures
+The number of different values should not be too high: ten values is on the high side" see R Manual 2023 p. 26
+```{r}
+# gen binary indicator of gun discharged past year
+df <- df %>%
+  mutate(gun_fire_bin.1 = ifelse(gun_fire.1 > 0, 1, 0),
+         gun_fire_bin.2 = ifelse(gun_fire.2 > 0, 1, 0))
+
+# gen continuous measure of gun use (draw + fire) wave 1 - (draw + fire + point) wave 2
+df <- df %>%
+  mutate(gun.1 = gun_draw.1 + gun_fire.1,
+         gun.2 = gun_draw.2 + gun_fire.2)
+
+# gen categorical variable of gun use (0 = no gun use, 1 = draw gun, 2 = fire gun)
+df <- df %>%
+  mutate(gun_cat.1 = ifelse(gun_fire.1 > 0, 2,
+                            ifelse(gun_draw.1 > 0, 1,
+                                   ifelse(gun_fire.1 == 0 & gun_draw.1 == 0, 0, NA))))
+df <- df %>%
+  mutate(gun_cat.2 = ifelse(gun_fire.2 > 0, 2,
+                            ifelse(gun_draw.2 > 0, 1,
+                                   ifelse(gun_fire.2 == 0 & gun_draw.2 == 0, 0, NA))))
+
+# split based on equal values within groups - append gun waves 1 and 2 datasets together to determine quantiles
+x <- select(df, gun.1) %>% rename("gun" = "gun.1")
+y <- select(df, gun.2) %>% rename("gun" = "gun.2")
+z <- rbind(x, y)
+
+z$gun_qt <- cut2(z$gun, g = 10) # gens 5 categories (0; 1-2; 3-4; 5-10; 11-100+)
+
+# gen dv using above values and standardizing across waves
+df <- df %>%
+  mutate(gun_qt.1 = ifelse(gun.1 == 0, 1,                           #[0]
+                    ifelse(gun.1 >= 1  & gun.1 <= 2, 2,             #[1-2]
+                    ifelse(gun.1 >= 3  & gun.1 <= 4, 3,             #[3-4]
+                    ifelse(gun.1 >= 5  & gun.1 <= 10, 4,            #[5-10]
+                    ifelse(gun.1 >= 11 & gun.1 <= 101, 5, NA))))))  #[11-100+]
+
+df <- df %>%
+  mutate(gun_qt.2 = ifelse(gun.2 == 0, 1,                           #[0]
+                    ifelse(gun.2 >= 1  & gun.2 <= 2, 2,             #[1-2]
+                    ifelse(gun.2 >= 3  & gun.2 <= 4, 3,             #[3-4]
+                    ifelse(gun.2 >= 5  & gun.2 <= 10, 4,            #[5-10]
+                    ifelse(gun.2 >= 11 & gun.2 <= 101, 5, NA))))))  #[11-100+]
+
+# gen outcomes w/ 10 vars for gun-use
+df <- df %>%
+  mutate(gun10.1 = ifelse(gun.1 >= 10, 10, gun.1),
+         gun10.2 = ifelse(gun.2 >= 10, 10, gun.2))
+```
+
+Is there sufficient change in firearm-use?
+```{r}
+# examine correlations - continuous gun-use (fire + draw)
+cor(df$gun.1, df$gun.2, use = "complete.obs", method = ("spearman"))
+
+# examine correlations - binary gun-use (fire)
+cor(df$gun_fire_bin.1, df$gun_fire_bin.2, use = "complete.obs")
+
+# the below table shows a certain degree of stability (few >0 in the off-diagonal)
+table(df$gun_fire_bin.1, df$gun_fire_bin.2, useNA = 'always')
+
+# the below table shows a certain degree of stability (few >0 in the off-diagonal)
+table(df$gun_qt.1, df$gun_qt.2, useNA = 'always')
+```
+
+For respondents only in one wave (e.g. 2021 and not 2022, or 2022 and not 2021) merge over static variables from diff wave
+```{r}
+df <- df %>%
+  mutate(male.1    = ifelse(is.na(wave.1), male.2, male.1),
+         male.2    = ifelse(is.na(wave.2), male.1, male.2),
+         hisp.1    = ifelse(is.na(wave.1), hisp.2, hisp.1),
+         hisp.2    = ifelse(is.na(wave.2), hisp.1, hisp.2),
+         race.1    = ifelse(is.na(wave.1), race.2, race.1),
+         race.2    = ifelse(is.na(wave.2), race.1, race.2),
+         age.1     = ifelse(is.na(wave.1), age.2-1, age.1),
+         age.2     = ifelse(is.na(wave.2), age.1+1, age.2),
+         nyears.1  = ifelse(is.na(wave.1), nyears.2-1, nyears.1),
+         nyears.2  = ifelse(is.na(wave.2), nyears.1+1, nyears.2),
+         acad_yr.1 = ifelse(is.na(wave.1), acad_yr.2, acad_yr.1),
+         acad_yr.2 = ifelse(is.na(wave.2), acad_yr.1, acad_yr.2),
+         acad_no.1 = ifelse(is.na(wave.1), acad_no.2, acad_no.1),
+         acad_no.2 = ifelse(is.na(wave.2), acad_no.1, acad_no.2))
+```
+
+Gen covariates
+```{r}
+# gen rank_po
+df <- df %>%
+  mutate(rank_po.1 = ifelse(rank.1 == "Police Officer" | rank.1 == "Senior Police Officer", 1, 0),
+         rank_po.2 = ifelse(rank.2 == "Police Officer" | rank.1 == "Senior Police Officer", 1, 0))
+
+# gen threat (in w1 only asked about threat, then w2 broken down by threat by weapon and threat by physical force no weapon)
+df <- df %>%
+  mutate(threat.1 = threat,
+         threat.2 = threat_wpn + threat_phy)
+
+# gen race
+df <- df %>%
+  mutate(race = ifelse(race.1 == 1, 1,               # Black
+                ifelse(race.1 == 5, 2,               # White
+                ifelse(race.1 == 2 | race.1 == 4, 3, # Other
+                       NA))))
+
+# gen taser use
+df <- df %>%
+  mutate(taser.1 = taser_draw.1 + taser_fire.1,
+         taser.2 = taser_draw.2 + taser_fire.2)
+```
+
+Gen number of ties to officers outside the department
+```{r}
+df <- df %>%
+  rowwise() %>%
+  mutate(nties_outside.1 = sum(c_across(frd01.1:frd10.1) == "88888", na.rm = T),
+         nties_outside.2 = sum(c_across(frd01.2:frd10.2) == "88888", na.rm = T))
+```
+
+Gen street-level variable
+```{r}
+# replace NA w/ 88 so ifelse statement doesn't ignore NAs
+df <- df %>% 
+  ungroup() %>%
+  mutate(street1.1x    = ifelse(is.na(street1.1), 88, street1.1),
+         street1.2x    = ifelse(is.na(street1.2), 88, street1.2),
+         street2.1x    = ifelse(is.na(street2.1), 88, street2.1),
+         street2.2x    = ifelse(is.na(street2.2), 88, street2.2),
+         proactive1.1x = ifelse(is.na(proactive1.1), 88, proactive1.1),
+         proactive1.2x = ifelse(is.na(proactive1.2), 88, proactive1.2),
+         proactive2.1x = ifelse(is.na(proactive2.1), 88, proactive2.1),
+         proactive2.2x = ifelse(is.na(proactive2.2), 88, proactive2.2),
+         rank.1        = ifelse(is.na(rank.1), 88, rank.1),
+         rank.2        = ifelse(is.na(rank.2), 88, rank.2)
+         )
+
+# gen officer street-level (and not white shirt) 
+df <- df %>%
+  mutate(street_asst = ifelse(street1.1x == 1 | street1.2x == 1 | street2.1x == 1 | street2.2x == 1, 1, 0),
+         street_rank = ifelse(rank.1 == "Captain" | rank.1 == "Major" | rank.1 == "Deputy Chief" |
+                              rank.2 == "Captain" | rank.2 == "Major" | rank.2 == "Deputy Chief", 0, 1),
+         street_asst = ifelse(street1.1x == 88 & street1.2x == 88 & street2.1x == 88 & street2.2x == 88, NA, street_asst),
+         street_rank = ifelse(rank.1 == 88 & rank.2 == 88, NA, street_rank),
+         street = ifelse(street_asst == 1 & street_rank == 1, 1, 0))
+
+# gen street-level based on past two years of assts
+df <- df %>%
+  mutate(street.1 = ifelse(street1.1x == 1 | street1.2x == 1, 1, 0),
+         street.2 = ifelse(street2.1x == 1 | street2.2x == 1, 1, 0),
+         street.1 = ifelse(street1.1x == 88 & street1.2x == 88, NA, street.1),
+         street.2 = ifelse(street2.1x == 88 & street2.2x == 88, NA, street.2))
+
+# gen proactive based on past two years of assts
+df <- df %>%
+  mutate(proactive.1 = ifelse(proactive1.1x == 1 | proactive1.2x == 1, 1, 0),
+         proactive.2 = ifelse(proactive2.1x == 1 | proactive2.2x == 1, 1, 0),
+         proactive.1 = ifelse(proactive1.1x == 88 & proactive1.2x == 88, NA, proactive.1),
+         proactive.2 = ifelse(proactive2.1x == 88 & proactive2.2x == 88, NA, proactive.2))
+```
+
+
+\newpage
+
+# Generate formal networks (same acad/same asst)
+
+## Generate academy edgelist
+
+Gen shared academy as an edgelist
+```{r}
+# Create academy edgelist
+el_acad <- df %>%
+  select(acad_no.1, uid) %>%
+  inner_join(., select(., acad_no.1, uid), by = "acad_no.1") %>%
+  unique %>%
+  arrange(uid.x, uid.y) %>%
+  rename(uid = uid.x,
+         alter = uid.y) %>%
+  select(uid, alter, acad_no.1, everything())
+```
+
+Remove self-loops/duplicates and retain isolates - academy
+```{r}
+# remove all instances where uid and alter are connected based on shared NA academy no
+el_acad <- el_acad %>%
+  mutate(remove = ifelse(is.na(acad_no.1) & uid != alter, 1, 0)) %>%
+  filter(remove != 1) %>%
+  select(-c(remove))
+
+# gen degree 
+el_acad <- el_acad %>% group_by(uid) %>%
+  mutate(deg = n_distinct(alter, na.rm = T) - 1)
+
+# remove self-loops if deg > 0 (to retain isolates)
+el_acad <- el_acad %>%
+  mutate(remove = ifelse(uid == alter & deg > 0, 1, 0)) %>%
+  filter(remove != 1) %>%
+  select(-c(remove))
+```
+
+Convert edgelist to matrix for Rsiena
+```{r}
+# gen edge1 using cleaned edge
+el_acad <- el_acad %>% select(uid, alter)
+
+# get unique list of ALL people in the edgelist (ego and alters) - should match master network 1584 nodes
+node1 <- union(unique(el_acad$uid), unique(el_acad$alter)) 
+
+# convert to igraph object
+g_acad <- igraph::graph_from_data_frame(el_acad, directed = FALSE)
+
+# convert to matrix 
+net_acad <- as.matrix(igraph::as_adjacency_matrix(g_acad))
+
+# convert diagonal matrix to zero (remove self-loops)
+diag(net_acad) <- 0
+
+# sort rows and columns - adjacency matrix
+net_acad <- net_acad[sort(rownames(net_acad)), sort(colnames(net_acad))]
+
+# sort rows - attributes
+df <- df %>%  arrange(uid)
+
+# confirm network data and attribute data in the same order
+df$uid==rownames(network::as.sociomatrix(net_acad))
+```
+
+## Generate assignment edgelist
+
+Gen shared assignment as an edgelist (past 3 years)
+```{r}
+# reshape df for asst1-asst3 var to long format
+el_asst <- df %>%
+  mutate(wave = "2021") %>%
+  pivot_longer(cols = asst1.1:asst3.1,
+               names_to = "asst_yr",
+               names_prefix = "asst",
+               values_to = "asst")
+
+# concatenate asst and asst_yr columns
+el_asst$shared_asst = paste(el_asst$asst_yr, el_asst$asst, sep = "-'")
+
+# create asst edgelist using past 3 years of assignments
+el_asst <- el_asst %>%
+  select(shared_asst, uid, wave) %>%
+  inner_join(., select(., shared_asst, uid), by = "shared_asst") %>%
+  unique %>%
+  arrange(uid.x, uid.y) %>%
+  rename(uid = uid.x,
+         alter = uid.y) %>%
+  select(uid, alter, shared_asst, everything())
+```
+
+Remove self-loops/duplicates and retain isolates - shared assignment
+```{r}
+# remove all instances where uid and alter are connected based on shared NA asst
+el_asst <- el_asst %>%
+  mutate(remove = ifelse(is.na(shared_asst) & uid != alter, 1, 0)) %>%
+  filter(remove != 1) %>%
+  select(-c(remove))
+
+# gen degree 
+el_asst <- el_asst %>% group_by(uid) %>%
+  mutate(deg = n_distinct(alter, na.rm = T) - 1)
+
+# remove self-loops if deg > 0 (to retain isolates)
+el_asst <- el_asst %>%
+  mutate(remove = ifelse(uid == alter & deg > 0, 1, 0)) %>%
+  filter(remove != 1) %>%
+  select(-c(remove))
+
+# remove duplicates - instances where ego nominated same alter more than once same wave (e.g. multiple shared assignments)
+el_asst <- el_asst %>%
+  group_by(uid, alter) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+Convert edgelist to matrix for Rsiena - shared assignment
+```{r}
+# get unique list of ALL people in the edgelist (ego and alters) - should match master network 1584 nodes
+node1 <- union(unique(el_asst$uid), unique(el_asst$alter)) # 476 nodes
+
+# convert to igraph object
+g_asst <- igraph::graph_from_data_frame(el_asst, directed = FALSE)
+
+# convert to matrix 
+net_asst <- as.matrix(igraph::as_adjacency_matrix(g_asst))
+
+# convert diagonal matrix to zero (remove self-loops)
+diag(net_asst) <- 0
+
+# sort rows and columns - adjacency matrix
+net_asst <- net_asst[sort(rownames(net_asst)), sort(colnames(net_asst))]
+
+# sort rows - attributes
+df <- df %>%  arrange(uid)
+
+# confirm network data and attribute data in the same order
+df$uid==rownames(network::as.sociomatrix(net_asst))
+```
+
+\newpage
+
+# Descriptive statistics
+
+## Network statistics
+
+Gen edgelist for wave 1
+```{r}
+# gen wave 1 edgelist 
+el21 <- df21 %>% 
+  gather(key = "key", value = "alter", 
+         frd01:frd10) 
+
+el22 <- df22 %>% 
+  gather(key = "key", value = "alter", 
+         frd01:frd10) 
+```
+
+Remove self-loops/duplicates and retain isolates
+```{r}
+# replace 55555, 88888, and 99999 w/ NA - wave 1
+el21 <- el21 %>%
+  mutate(alter = ifelse(alter == "88888", NA, alter),
+         alter = ifelse(alter == "99999", NA, alter),
+         alter = ifelse(alter == "55555", NA, alter))
+
+# replace 55555, 88888, and 99999 w/ NA - wave 2
+el22 <- el22 %>%
+  mutate(alter = ifelse(alter == "88888", NA, alter),
+         alter = ifelse(alter == "99999", NA, alter),
+         alter = ifelse(alter == "55555", NA, alter))
+
+# gen indicator of out-degree to retain isolates
+el21 <- el21 %>% group_by(uid) %>%
+  mutate(dego = n_distinct(alter, na.rm = T))
+el22 <- el22 %>% group_by(uid) %>%
+  mutate(dego = n_distinct(alter, na.rm = T))
+
+# replace alter with uid for instances where degree == 0
+el21 <- el21 %>%
+  mutate(alter = replace(alter, dego == 0, uid))
+el22 <- el22 %>%
+  mutate(alter = replace(alter, dego == 0, uid))
+
+# remove rows where alter = NA
+el21 <- el21 %>% drop_na(alter)
+el22 <- el22 %>% drop_na(alter)
+
+# remove duplicates - instances where ego nominated same alter more than once same wave
+el21 <- el21 %>%
+  group_by(uid, alter) %>%
+  slice(1) %>%
+  ungroup()
+el22 <- el22 %>%
+  group_by(uid, alter) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+Filter edgelist to only include alters who responded to the survey in CURRENT WAVE (for some egos, none of their alters responded to the survey)
+```{r}
+# in el - identify if nomination responded to survey
+el21$ego_survey <- el21$uid   %in% df21$uid  
+el21$alt_survey <- el21$alter %in% df21$uid  
+el22$ego_survey <- el22$uid   %in% df22$uid  
+el22$alt_survey <- el22$alter %in% df22$uid  
+
+# calculate dego not taking into account alt_survey == FALSE (e.g. instances where none of ego's alters responded to the survey)
+el21 <- el21 %>%
+  group_by(uid, wave) %>%
+  mutate(count_false = sum(alt_survey == "FALSE")) %>%
+  ungroup()
+el22 <- el22 %>%
+  group_by(uid) %>%
+  mutate(count_false = sum(alt_survey == "FALSE")) %>%
+  ungroup()
+
+# identify if none of ego's alters responded to the survey - to retain isolates
+el21 <- el21 %>%
+  mutate(alter_noresponse = ifelse(dego == count_false, 1, 0))
+el22 <- el22 %>%
+  mutate(alter_noresponse = ifelse(dego == count_false, 1, 0))
+
+# if none of ego's alters responded to the survey - replace alter w/ ego's uid
+el21 <- el21 %>%
+  mutate(alter = ifelse(alter_noresponse == 1, uid, alter))
+el22 <- el22 %>%
+  mutate(alter = ifelse(alter_noresponse == 1, uid, alter))
+
+# in el - only retain nominations who responded to survey
+el21 <- el21 %>% 
+  filter(ego_survey == "TRUE") %>%
+  filter(alt_survey == "TRUE" | alter_noresponse == 1)
+el22 <- el22 %>% 
+  filter(ego_survey == "TRUE") %>%
+  filter(alt_survey == "TRUE" | alter_noresponse == 1)
+
+# remove duplicates - instances where none of ego's alters responded to survey, and each alter replaced with uid
+el21 <- el21 %>%
+  group_by(uid, alter) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(uid, alter)
+el22 <- el22 %>%
+  group_by(uid, alter) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(uid, alter)
+```
+
+Convert to igraph object
+```{r}
+# convert to igraph object
+g21 <- igraph::graph_from_data_frame(el21, directed = TRUE)
+g22 <- igraph::graph_from_data_frame(el22, directed = TRUE)
+```
+
+Calculate network statistics - 2021
+```{r}
+clu <- igraph::components(g21)
+biggest_cluster <- which.max(clu$csize)
+node_ids <- V(g21)[clu$membership == biggest_cluster]
+lcc21 <- igraph::induced_subgraph(g21, node_ids)                  # gen lcc
+
+degin21   = igraph::degree(g21, mode = "in")                              # in degree centrality for all nodes in the network
+degot21   = igraph::degree(g21, mode = "out")                             # out degree centrality for all nodes in the network
+
+
+network_metrics21 <- cbind(
+  nodes     = vcount(g21),                                        # count the number of nodes
+  edges     = ecount(g21),                                        # count the number of edges
+  density   = edge_density(g21),                                  # calculate the network's density
+  cc        = transitivity(g21, "global"),                        # calculate the network's clustering coefficient
+  recip     = reciprocity(g21),                                   # calculate the extent to which ties in the network are reciprocated
+  centr_deg = centr_degree(g21, mode = "all")$centralization,     # calculate the network's degree centralization
+  lcc       = vcount(lcc21),
+  meandegin = mean(degin21),
+  mindegin  = min(degin21),
+  maxdegin  = max(degin21),
+  meandegot = mean(degot21),
+  mindegot  = min(degot21),
+  maxdegot  = max(degot21)
+)
+
+# convert network metrics object to a dataframe
+network_metrics21 <- as.data.frame(t(network_metrics21))
+
+# take a peak at the network statistics
+options(scipen=999)
+network_metrics21
+```
+
+Calculate network statistics - 2022
+```{r}
+clu <- igraph::components(g22)
+biggest_cluster <- which.max(clu$csize)
+node_ids <- V(g22)[clu$membership == biggest_cluster]
+lcc22 <- igraph::induced_subgraph(g22, node_ids)                  # gen lcc
+
+degin22   = igraph::degree(g22, mode = "in")                      # in degree centrality for all nodes in the network
+degot22   = igraph::degree(g22, mode = "out")                     # out degree centrality for all nodes in the network
+
+
+network_metrics22 <- cbind(
+  nodes     = vcount(g22),                                        # count the number of nodes
+  edges     = ecount(g22),                                        # count the number of edges
+  density   = edge_density(g22),                                  # calculate the network's density
+  cc        = transitivity(g22, "global"),                        # calculate the network's clustering coefficient
+  recip     = reciprocity(g22),                                   # calculate the extent to which ties in the network are reciprocated
+  centr_deg = centr_degree(g22, mode = "all")$centralization,     # calculate the network's degree centralization
+  lcc       = vcount(lcc22),
+  meandegin = mean(degin22),
+  mindegin  = min(degin22),
+  maxdegin  = max(degin22),
+  meandegot = mean(degot22),
+  mindegot  = min(degot22),
+  maxdegot  = max(degot22)
+)
+
+# convert network metrics object to a dataframe
+network_metrics22 <- as.data.frame(t(network_metrics22))
+
+# take a peak at the network statistics
+network_metrics22
+```
+
+Bind the network metrics
+```{r}
+network_metrics21 <- network_metrics21 %>% rename("2021" = "V1")
+network_metrics22 <- network_metrics22 %>% rename("2022" = "V1")
+
+network_metrics <- cbind(
+  network_metrics21,
+  network_metrics22
+)
+
+network_metrics
+
+# export network statistics as csv file
+write.csv(network_metrics, "output/ponet_xpd_netstats.csv")
+```
+
+## Network visualization
+
+Gen nodelist that matches with edgelist to have attributes for visualization
+```{r}
+# get unique list of ALL people in the edgelist (ego and alters) - should match
+vis1_nodes <- union(unique(el21$uid), unique(el21$alter)) 
+vis2_nodes <- union(unique(el22$uid), unique(el22$alter))
+
+# convert lists to dataframes
+vis1_nodes <- data.frame(matrix(unlist(vis1_nodes), nrow = length(vis1_nodes), byrow = T))
+vis2_nodes <- data.frame(matrix(unlist(vis2_nodes), nrow = length(vis2_nodes), byrow = T))
+colnames(vis1_nodes)[1] = "uid"
+colnames(vis2_nodes)[1] = "uid"
+
+# attach relevant attributes
+vis_att <- select(df, uid, gun_qt.1, gun_qt.2)
+vis1_nodes <- left_join(vis1_nodes, vis_att, by = c("uid"))
+vis2_nodes <- left_join(vis2_nodes, vis_att, by = c("uid"))
+
+# convert to igraph object
+frd21 <- igraph::graph_from_data_frame(el21, vertices = vis1_nodes, directed = TRUE)
+frd22 <- igraph::graph_from_data_frame(el22, vertices = vis2_nodes, directed = TRUE)
+
+# subset network to street-level
+```
+
+Wave 1 friend network
+```{r}
+# extract largest connected component
+clu <- igraph::components(frd21)
+biggest_cluster <- which.max(clu$csize)
+# set colors nodes
+V(frd21)$color.background  <- ifelse(V(frd21)$gun_qt.1 == "4" | V(frd21)$gun_qt.1 == "5", "#f20039", "#D3D3D3")
+
+# set node size
+V(frd21)$deg <- igraph::degree(frd21, mode='in')*2 
+
+# remove nodes w/ missing values for ops_high
+# x <- induced.subgraph(frd21p1_a, !is.na(V(frd21p1_a)$ops_high))
+
+# convert to visnetwork object
+frd21.vis <- toVisNetworkData(frd21)
+
+# frd21.vis$nodes$color[frd21.vis$nodes$gun_high == 0] = "gold"                # node color
+# frd21.vis$nodes$color[frd21.vis$nodes$gun_high == 1] = "#F00505"             # node color
+frd21.vis$nodes$shape  <- "dot"                                                # node shape
+frd21.vis$nodes$value   <- V(frd21)$deg                                            # node size
+frd21.vis$nodes$color.border <- "black"                                        # color border
+# frd21.vis$nodes$title <- frd21.vis$nodes$nyears2                               # labels for nyears
+frd21.vis$nodes$color.highlight.background <- "orange"                         # highlight bkgrd
+frd21.vis$nodes$color.highlight.border <- "darkred"                            # highlight border
+frd21.vis$edges$arrows <- "middle"                                             # set arrows to middle
+frd21.vis$edges$color <- "gray"                                                # edge color 
+
+# addNodes <- data.frame(label = c("Female", "Male"), icon.color = alpha(c("#E5E5E5", "#14213D"), alpha = 0.6))
+
+# visNetwork(nodes = frd21.vis$nodes, edges = frd21.vis$edges, height = "500px", width = "100%") %>%
+# visNodes(scaling = list(min = 30, max = 90), 
+# color = list(border = "black"),
+#         opacity = 0.9) %>%
+# visOptions(highlightNearest = TRUE, selectedBy = "leiden") %>%
+# visLayout(randomSeed = 1337) %>%
+# visLegend(addNodes = addNodes) %>%
+# visPhysics(solver = "forceAtlas2Based") 
+```
+
+## Descriptive statistics officer-level
+```{r}
+# merge in gun-use variables into df21 and df22 dataframes
+df_summary <- select(df, uid, 
+                gun_cat.1, gun_cat.2, 
+                gun_qt.1, gun_qt.2, 
+                nops, nops2,
+                male.1, male.2,
+                race_whi.1, race_whi.2, race_blk.1, race_blk.2, hisp.1, hisp.2,
+                rank_po.1, rank_po.2,
+                acad_yr.1, acad_yr.2,
+                proactive.1, proactive.2,
+                street.1, street.2,
+                threat.1, threat.2,
+                taser.1, taser.2)
+
+# transform gun_cat into dummy vars
+df_summary <- df_summary %>%
+  mutate(gun_cat_none.1 = ifelse(gun_cat.1 == 0, 1, 0),
+         gun_cat_draw.1 = ifelse(gun_cat.1 == 1, 1, 0),
+         gun_cat_fire.1 = ifelse(gun_cat.1 == 2, 1, 0),
+         gun_cat_none.2 = ifelse(gun_cat.2 == 0, 1, 0),
+         gun_cat_draw.2 = ifelse(gun_cat.2 == 1, 1, 0),
+         gun_cat_fire.2 = ifelse(gun_cat.2 == 2, 1, 0),
+         nops1 = nops)
+
+# transform gun_qt into dummy vars
+df_summary <- df_summary %>%
+  mutate(gun_qt_cat1.1 = ifelse(gun_qt.1 == 1, 1, 0),
+         gun_qt_cat2.1 = ifelse(gun_qt.1 == 2, 1, 0),
+         gun_qt_cat3.1 = ifelse(gun_qt.1 == 3, 1, 0),
+         gun_qt_cat4.1 = ifelse(gun_qt.1 == 4, 1, 0),
+         gun_qt_cat5.1 = ifelse(gun_qt.1 == 5, 1, 0),
+         gun_qt_cat1.2 = ifelse(gun_qt.2 == 1, 1, 0),
+         gun_qt_cat2.2 = ifelse(gun_qt.2 == 2, 1, 0),
+         gun_qt_cat3.2 = ifelse(gun_qt.2 == 3, 1, 0),
+         gun_qt_cat4.2 = ifelse(gun_qt.2 == 4, 1, 0),
+         gun_qt_cat5.2 = ifelse(gun_qt.2 == 5, 1, 0),
+         )
+
+# left join to df21 and df22
+df_summary21 <- left_join(df21, df_summary, by = c("uid"))
+df_summary22 <- left_join(df22, df_summary, by = c("uid"))
+
+# select relevant vars for summary statistics from dataframes
+df_summary21 <- select(df_summary21, uid, 
+                gun_cat_none.1, gun_cat_draw.1, gun_cat_fire.1, gun_qt.1, 
+                gun_qt_cat1.1, gun_qt_cat2.1, gun_qt_cat3.1, gun_qt_cat4.1, gun_qt_cat5.1,
+                male.1, race_whi.1, race_blk.1, hisp.1, acad_yr.1, rank_po.1, 
+                proactive.1, street.1, threat.1, taser.1, nops1)
+df_summary22 <- select(df_summary22, uid, 
+                gun_cat_none.2, gun_cat_draw.2, gun_cat_fire.2, gun_qt.2, 
+                gun_qt_cat1.2, gun_qt_cat2.2, gun_qt_cat3.2, gun_qt_cat4.2, gun_qt_cat5.2,
+                male.2, race_whi.2, race_blk.2, hisp.2, acad_yr.2, rank_po.2, 
+                proactive.2, street.2, threat.2, taser.2, nops2)
+
+# transform all variables into numeric
+df_summary21 <- data.frame(lapply(df_summary21, function(x) as.numeric(as.character(x))))
+df_summary22 <- data.frame(lapply(df_summary22, function(x) as.numeric(as.character(x))))
+
+# sum stats - full sample
+sumstats21 <- psych::describe(df_summary21)[,c(2,3,4,5,8,9)]
+sumstats22 <- psych::describe(df_summary22)[,c(2,3,4,5,8,9)]
+
+# convert class 'describe' to a data.frame
+class(sumstats21) <- 'data.frame'
+class(sumstats22) <- 'data.frame'
+
+# write.csv
+write.csv(sumstats21, "output/ponet_xpd_sumstats_21.csv")
+write.csv(sumstats22, "output/ponet_xpd_sumstats_22.csv")
+```
+
+\newpage
+
+## Generate friendship matrix for RSiena
+Need to be same dimensions for matrix transformation (keeps isolates)
+```{r}
+# gen wave 1 edgelist 
+el1 <- df %>% 
+  mutate(wave = "2021") %>%
+  gather(key = "key", value = "alter", 
+         frd01.1:frd10.1)  
+
+# gen wave 2 edgelist 
+el2 <- df %>% 
+  mutate(wave = "2022") %>%
+  gather(key = "key", value = "alter", 
+         frd01.2:frd10.2)  
+```
+
+Gen edge attribute - frequency
+```{r}
+el1 <- el1 %>%
+  mutate(frequency = 
+           ifelse(key == "frd01.1", frd01_frq.1,
+           ifelse(key == "frd02.1", frd02_frq.1,
+           ifelse(key == "frd03.1", frd03_frq.1,
+           ifelse(key == "frd04.1", frd04_frq.1,
+           ifelse(key == "frd05.1", frd05_frq.1,
+           ifelse(key == "frd06.1", frd06_frq.1,
+           ifelse(key == "frd07.1", frd07_frq.1,
+           ifelse(key == "frd08.1", frd08_frq.1,
+           ifelse(key == "frd09.1", frd09_frq.1,
+           ifelse(key == "frd10.1", frd10_frq.1, NA)))))))))))
+
+el2 <- el2 %>%
+  mutate(frequency = 
+           ifelse(key == "frd01.2", frd01_frq.2,
+           ifelse(key == "frd02.2", frd02_frq.2,
+           ifelse(key == "frd03.2", frd03_frq.2,
+           ifelse(key == "frd04.2", frd04_frq.2,
+           ifelse(key == "frd05.2", frd05_frq.2,
+           ifelse(key == "frd06.2", frd06_frq.2,
+           ifelse(key == "frd07.2", frd07_frq.2,
+           ifelse(key == "frd08.2", frd08_frq.2,
+           ifelse(key == "frd09.2", frd09_frq.2,
+           ifelse(key == "frd10.2", frd10_frq.2, NA)))))))))))
+
+
+# convert frequency to numeric vector
+el1 <- el1 %>%
+  mutate(frequency = ifelse(frequency == "Daily", 4,
+                     ifelse(frequency == "A few times a week", 3,
+                     ifelse(frequency == "A few times a month", 2,
+                     ifelse(frequency == "Less than once a month", 1, NA)))))
+
+# convert frequency to numeric vector
+el2 <- el2 %>%
+  mutate(frequency = ifelse(frequency == "Daily", 4,
+                     ifelse(frequency == "A few times a week", 3,
+                     ifelse(frequency == "A few times a month", 2,
+                     ifelse(frequency == "Less than once a month", 1, NA)))))
+```
+
+Gen edge attribute - years known
+```{r}
+el1 <- el1 %>%
+  mutate(years = 
+           ifelse(key == "frd01.1", frd01_yrs.1,
+           ifelse(key == "frd02.1", frd02_yrs.1,
+           ifelse(key == "frd03.1", frd03_yrs.1,
+           ifelse(key == "frd04.1", frd04_yrs.1,
+           ifelse(key == "frd05.1", frd05_yrs.1,
+           ifelse(key == "frd06.1", frd06_yrs.1,
+           ifelse(key == "frd07.1", frd07_yrs.1,
+           ifelse(key == "frd08.1", frd08_yrs.1,
+           ifelse(key == "frd09.1", frd09_yrs.1,
+           ifelse(key == "frd10.1", frd10_yrs.1, NA)))))))))))
+
+el2 <- el2 %>%
+  mutate(years = 
+           ifelse(key == "frd01.2", frd01_yrs.2,
+           ifelse(key == "frd02.2", frd02_yrs.2,
+           ifelse(key == "frd03.2", frd03_yrs.2,
+           ifelse(key == "frd04.2", frd04_yrs.2,
+           ifelse(key == "frd05.2", frd05_yrs.2,
+           ifelse(key == "frd06.2", frd06_yrs.2,
+           ifelse(key == "frd07.2", frd07_yrs.2,
+           ifelse(key == "frd08.2", frd08_yrs.2,
+           ifelse(key == "frd09.2", frd09_yrs.2,
+           ifelse(key == "frd10.2", frd10_yrs.2, NA)))))))))))
+
+
+ # replace < 1 year with '0'
+el1 <- el1 %>%
+  mutate(years = ifelse(years == "< 1 year", 0, years))
+el2 <- el2 %>%
+  mutate(years = ifelse(years == "< 1 year", 0, years))
+
+# remove character 'years' and '<' sign from each value
+el1 <- el1 %>% 
+  mutate(years = str_replace_all(years, "[^[:alnum:]]", ""),
+         years = str_replace_all(years, "[[A-Za-z]]", ""))
+el2 <- el2 %>% 
+  mutate(years = str_replace_all(years, "[^[:alnum:]]", ""),
+         years = str_replace_all(years, "[[A-Za-z]]", ""))
+
+# convert to numeric var
+el1$years <- as.numeric(el1$years)
+el2$years <- as.numeric(el2$years)
+```
+
+Remove self-loops/duplicates and retain isolates
+```{r}
+# replace 55555, 88888, and 99999 w/ NA - wave 1
+el1 <- el1 %>%
+  mutate(alter = ifelse(alter == "88888", NA, alter),
+         alter = ifelse(alter == "99999", NA, alter),
+         alter = ifelse(alter == "55555", NA, alter))
+
+# replace 55555, 88888, and 99999 w/ NA - wave 2
+el2 <- el2 %>%
+  mutate(alter = ifelse(alter == "88888", NA, alter),
+         alter = ifelse(alter == "99999", NA, alter),
+         alter = ifelse(alter == "55555", NA, alter))
+
+# append wave 1 and wave 2 edgelists
+edge <- bind_rows(el1, el2)
+
+# gen indicator of out-degree to retain isolates
+edge <- edge %>% group_by(uid, wave) %>%
+  mutate(dego = n_distinct(alter, na.rm = T))
+
+# replace alter with uid for instances where degree == 0
+edge <- edge %>%
+  mutate(alter = replace(alter, dego == 0, uid))
+
+# remove rows where alter = NA
+edge <- edge %>% drop_na(alter)
+
+# remove duplicates - instances where ego nominated same alter more than once same wave
+edge <- edge %>%
+  group_by(uid, alter, wave) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+Filter edgelist to only include alters who responded to the survey in at least one wave (for some egos, none of their alters responded to the survey)
+```{r}
+# in el - identify if nomination responded to survey
+edge$ego_survey <- edge$uid   %in% df$uid  
+edge$alt_survey <- edge$alter %in% df$uid  
+
+# calculate dego not taking into account alt_survey == FALSE (e.g. instances where none of ego's alters responded to the survey)
+edge <- edge %>%
+  group_by(uid, wave) %>%
+  mutate(count_false = sum(alt_survey == "FALSE")) %>%
+  ungroup()
+
+# identify if none of ego's alters responded to the survey - to retain isolates
+edge <- edge %>%
+  mutate(alter_noresponse = ifelse(dego == count_false, 1, 0))
+
+# if none of ego's alters responded to the survey - replace alter w/ ego's uid
+edge <- edge %>%
+  mutate(alter = ifelse(alter_noresponse == 1, uid, alter))
+
+# in el - only retain nominations who responded to survey
+edge <- edge %>% 
+  filter(ego_survey == "TRUE") %>%
+  filter(alt_survey == "TRUE" | alter_noresponse == 1)
+
+# remove duplicates - instances where none of ego's alters responded to survey, and each alter replaced with uid
+edge <- edge %>%
+  group_by(uid, alter, wave) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+Gen edgelist for 2021 and 2022 using cleaned edge
+```{r}
+# gen edge1 and edge2 using cleaned edge
+edge1 <- edge %>% filter(wave == "2021") %>% select(uid, alter, years, frequency)
+edge2 <- edge %>% filter(wave == "2022") %>% select(uid, alter, years, frequency)
+```
+
+Identify structural zeros (officers who were not employed w/ XPD in wave 1) and officers who were missing (did not take survey in wave 1)
+```{r}
+# identify if uid (2022) only in 2022 data (not in wave 1 survey)
+link1 <- df21 %>% select(uid) %>% mutate(wave1 = 1)
+edge2 <- left_join(edge2, link1, by = c("uid"))
+
+# identify if uid (2022) only in 2022 data (not in wave 1 survey) - AND not employed by XPD in 2021
+df22 <- df22 %>% mutate(acad_yr = ifelse(acad_yr == "<1981", "1980", acad_yr))
+df22$acad_yr <- as.numeric(as.character(str_replace_all(df22$acad_yr, "[^[:alnum:]]", "")))
+status <- df22 %>% mutate(acad_yr = 2022 - acad_yr,
+                         acad_yr = ifelse(is.na(acad_yr), nyears, acad_yr)) %>%
+                  select(uid, acad_yr)
+edge2 <- left_join(edge2, status, by = c("uid"))
+edge2 <- edge2 %>% mutate(wave1 = ifelse(is.na(wave1) & acad_yr <=2, 10, wave1))  # 2 years as this accounts for people who started training at some point in 2020 and therefore were still in training and may not have gone into in-service training until the following year
+
+# retain relevant vars - these individuals were NA in wave 1 data
+wave21_NA <- edge2 %>% filter(is.na(wave1)) %>%
+  group_by(uid) %>%
+  slice(1)
+
+# retain relevant vars - these individuals were not employed in wave 1 data
+wave21_struct <- edge2 %>% filter(wave1 == 10) %>%
+  group_by(uid) %>%
+  slice(1)
+```
+
+Identify structural zeros (officers who were no longer employed w/ XPD in wave 2) and officers who were missing (did not take survey in wave 2)
+```{r}
+# identify if uid (2021) only in 2021 data (not in wave 2 survey)
+link2 <- df22 %>% select(uid) %>% mutate(wave2 = 1)
+edge1 <- left_join(edge1, link2, by = c("uid"))
+
+# read in employment status data - were they missing or were they not employed?
+status <- read.csv("data/ponet_xpd_2022_status1.csv")
+status$separation_date <- mdy(status$separation_date)
+status$separation_year <- year(status$separation_date)
+status <- status %>%
+  mutate(status1 = ifelse(separation_year >= "2022", 10, NA)) %>%
+  select(uid, status1)
+status$uid <- as.numeric(as.character(status$uid))
+edge1 <- left_join(edge1, status, by = c("uid"))
+edge1 <- edge1 %>% mutate(wave2 = ifelse(is.na(wave2) & status1 == 10, 10, wave2))
+
+
+# retain relevant vars - these individuals were NA in wave 2 data
+wave22_NA <- edge1 %>% filter(is.na(wave2)) %>%
+  group_by(uid) %>%
+  slice(1)
+
+# retain relevant vars - these individuals were not employed in wave 2 data
+wave22_struct <- edge1 %>% filter(wave2 == 10) %>%
+  group_by(uid) %>%
+  slice(1)
+```
+
+Convert edgelists to matrix for Rsiena
+```{r}
+# get unique list of ALL people in the edgelist (ego and alters) - should match
+node1 <- union(unique(edge1$uid), unique(edge1$alter)) 
+node2 <- union(unique(edge2$uid), unique(edge2$alter)) 
+
+# convert to igraph object
+g1 <- igraph::graph_from_data_frame(edge1, directed = TRUE)
+g2 <- igraph::graph_from_data_frame(edge2, directed = TRUE)
+
+# convert to directed matrix 
+net1 <- as.matrix(igraph::as_adjacency_matrix(g1))
+net2 <- as.matrix(igraph::as_adjacency_matrix(g2)) 
+
+# convert to directed matrix - years known
+yrs1 <- as.matrix(igraph::as_adjacency_matrix(g1, attr = "years"))
+yrs2 <- as.matrix(igraph::as_adjacency_matrix(g2, attr = "years"))
+
+# convert to directed matrix - frequency
+frq1 <- as.matrix(igraph::as_adjacency_matrix(g1, attr = "frequency"))
+frq2 <- as.matrix(igraph::as_adjacency_matrix(g2, attr = "frequency"))
+
+# convert diagonal matrix to zero (remove self-loops)
+diag(net1) <- 0
+diag(net2) <- 0
+diag(yrs1) <- 0
+diag(yrs2) <- 0
+diag(frq1) <- 0
+diag(frq2) <- 0
+
+# sort rows and columns - adjacency matrix
+net1 <- net1[sort(rownames(net1)), sort(colnames(net1))]
+net2 <- net2[sort(rownames(net2)), sort(colnames(net2))]
+yrs1 <- net1[sort(rownames(yrs1)), sort(colnames(yrs1))]
+yrs2 <- net2[sort(rownames(yrs2)), sort(colnames(yrs2))]
+frq1 <- net1[sort(rownames(frq1)), sort(colnames(frq1))]
+frq2 <- net2[sort(rownames(frq2)), sort(colnames(frq2))]
+
+# sort rows - attributes
+df <- df %>%  arrange(uid)
+
+# confirm network data and attribute data in the same order
+df$uid==rownames(network::as.sociomatrix(net1))
+df$uid==rownames(network::as.sociomatrix(net2))
+```
+
+Gen Moran's I statistic between friend network and gun-use (gun.cat and gun.qt)
+See introduction to Moran's I https://cns.iu.edu/images/pres/2009-zoss-links/2009-zoss-links-intro-to-sna/slides/2009_INTRO_Thu_HypothesisTesting.pdf
+Statnet application of Moran's I https://rpubs.com/pjmurphy/338798
+```{r, eval = FALSE}
+# calculate Moran's I using statnet package
+#library(statnet)
+# sna1 <- network::as.network(as.matrix(net1))
+# sna2 <- network::as.network(as.matrix(net2))
+# sna1%v%"gun_qt.1"  <- df$gun_qt.1
+# sna2%v%"gun_qt.2"  <- df$gun_qt.2
+# sna1%v%"gun_cat.1" <- df$gun_cat.1
+# sna2%v%"gun_cat.2" <- df$gun_cat.2
+# gun_qt.1  <- get.vertex.attribute(sna1, "gun_qt.1")
+# gun_qt.2  <- get.vertex.attribute(sna2, "gun_qt.2")
+# gun_cat.1 <- get.vertex.attribute(sna1, "gun_cat.1")
+# gun_cat.2 <- get.vertex.attribute(sna2, "gun_cat.2")
+# nacf(sna1, gun_qt.1, type = "moran", mode = "graph")[2]
+
+# calculate Moran's I using igraph package
+# test <- intergraph::asIgraph(sna1)
+# netdiffuseR::moran(test, gun_qt.1)
+
+# calculate Moran's I using ape package
+ape::Moran.I(gun_qt.1, net1, na.rm = T)
+ape::Moran.I(gun_qt.2, net2, na.rm = T)
+ape::Moran.I(gun_cat.1, net1, na.rm = T)
+ape::Moran.I(gun_cat.2, net2, na.rm = T)
+# p < .001 can reject the null hypothesis that there is zero spatial autocorrelation
+```
+
+Calculate jaccard index
+```{r}
+# Network change between subsequent observations:
+(tab1to2 <- table(net1, net2,useNA='always') )
+# Measure stability using the Jaccard index (script only works if no missing ties)
+# Jaccard should be minimum of .2 for RSiena
+# jaccard # of ties that are present in two networks / by the number of ties that are present in either
+tab1to2[2,2] / (sum(tab1to2)-tab1to2[1,1])   # jaccard=.22
+```
+
+Assign structural zeros to matrix - wave 1
+```{r}
+# using "" quotations allows the function to call row names (rather than row number - if no quotations)
+table(wave21_struct$uid)
+struct21 <- c("1016",	"1022",	"1098",	"1116",	"1148",	"1169",	"1175",	"1183",	"1214",	"1267",	"1342",	"1382",	"1397",	"1437",	"1447",	"1455",	"1490",	"1514",	"1566",	"1571",	"1598",	"1608",	"1613",	"1633",	"1733",	"1738",	"1756",	"1782",	"1787",	"1790",	"1792",	"1794",	"1854",	"1855",	"1857",	"1907",	"1975",	"1980",	"1990",	"1999",	"2000",	"2016",	"2032",	"2034",	"2054",	"2055",	"2071",	"2106",	"2114",	"2117",	"2127",	"2147",	"2174",	"2195",	"2211",	"2231",	"2252",	"2274",	"2275",	"2294",	"2305",	"2314",	"2316",	"2374",	"2402",	"2412",	"2490",	"2504",	"2513",	"2540",	"2547",	"2596",	"2612",	"2650",	"2652",	"2671",	"2679",	"2699",	"2710",	"2720",	"2772",	"2774",	"2783",	"2794",	"2859",	"2867",	"2881",	"2889")
+
+# structural zeros for both sending and receiving ties
+net1[struct21, ] <- 10
+net1[, struct21] <- 10
+```
+
+Assign structural zeros to matrix - wave 2
+```{r}
+table(wave22_struct$uid)
+struct22 <- c("1040",	"1049",	"1050",	"1126",	"1132",	"1204",	"1208",	"1378",	"1503",	"1582",	"1583",	"1614",	"1626",	"1681",	"1825",	"1875",	"1924",	"1955",	"1971",	"2043",	"2053",	"2063",	"2098",	"2121",	"2155",	"2184",	"2334",	"2484",	"2563",	"2601",	"2625",	"2664",	"2681",	"2692",	"2702",	"2843",	"2845",	"2880",	"2890",	"2903")
+
+# structural zeros for both sending and receiving ties
+net2[struct22, ] <- 10
+net2[, struct22] <- 10
+```
+
+Assign NAs to matrix - wave 1 (n=216)
+```{r}
+NA21 <- c("1017",	"1032",	"1033",	"1047",	"1056",	"1071",	"1085",	"1093",	"1114",	"1133",	"1151",	"1156",	"1161",	"1172",	"1207",	"1209",	"1221",	"1223",	"1224",	"1231",	"1246",	"1250",	"1253",	"1262",	"1276",	"1277",	"1311",	"1315",	"1323",	"1329",	"1355",	"1362",	"1369",	"1375",	"1379",	"1402",	"1403",	"1404",	"1412",	"1414",	"1418",	"1431",	"1442",	"1453",	"1458",	"1464",	"1467",	"1476",	"1508",	"1511",	"1512",	"1516",	"1519",	"1520",	"1535",	"1540",	"1543",	"1562",	"1575",	"1586",	"1615",	"1617",	"1629",	"1632",	"1634",	"1635",	"1662",	"1667",	"1668",	"1669",	"1672",	"1684",	"1686",	"1690",	"1699",	"1701",	"1702",	"1719",	"1720",	"1727",	"1735",	"1740",	"1741",	"1750",	"1754",	"1759",	"1763",	"1800",	"1815",	"1829",	"1830",	"1836",	"1839",	"1849",	"1866",	"1882",	"1888",	"1909",	"1914",	"1927",	"1928",	"1931",	"1941",	"1946",	"1951",	"1953",	"1964",	"1967",	"1969",	"1989",	"1992",	"1995",	"2017",	"2027",	"2065",	"2067",	"2075",	"2076",	"2088",	"2097",	"2105",	"2128",	"2140",	"2154",	"2163",	"2165",	"2175",	"2178",	"2179",	"2194",	"2203",	"2206",	"2218",	"2220",	"2238",	"2247",	"2251",	"2260",	"2265",	"2273",	"2276",	"2284",	"2303",	"2317",	"2320",	"2325",	"2327",	"2330",	"2331",	"2346",	"2349",	"2365",	"2370",	"2399",	"2422",	"2441",	"2442",	"2461",	"2471",	"2482",	"2489",	"2495",	"2498",	"2499",	"2505",	"2528",	"2532",	"2543",	"2546",	"2550",	"2552",	"2553",	"2558",	"2561",	"2569",	"2571",	"2572",	"2595",	"2597",	"2603",	"2614",	"2637",	"2646",	"2648",	"2654",	"2659",	"2662",	"2667",	"2673",	"2676",	"2687",	"2694",	"2697",	"2713",	"2734",	"2742",	"2750",	"2759",	"2762",	"2771",	"2798",	"2822",	"2825",	"2832",	"2833",	"2836",	"2844",	"2852",	"2855",	"2857",	"2858",	"2866",	"2870",	"2897",	"2898",	"2914")
+
+# NAs for outgoing ties only
+net1[NA21, ] <- NA
+```
+
+Assign NAs to matrix - wave 2 (n=182)
+```{r}
+NA22 <- c("1007",	"1011",	"1018",	"1034",	"1051",	"1075",	"1080",	"1084",	"1092",	"1096",	"1103",	"1131",	"1139",	"1142",	"1180",	"1193",	"1194",	"1233",	"1251",	"1264",	"1297",	"1299",	"1309",	"1338",	"1381",	"1384",	"1387",	"1388",	"1401",	"1410",	"1417",	"1420",	"1422",	"1424",	"1432",	"1450",	"1451",	"1457",	"1463",	"1466",	"1471",	"1475",	"1485",	"1487",	"1496",	"1499",	"1517",	"1518",	"1526",	"1531",	"1538",	"1541",	"1542",	"1544",	"1546",	"1548",	"1553",	"1581",	"1587",	"1603",	"1616",	"1641",	"1646",	"1656",	"1670",	"1679",	"1685",	"1691",	"1696",	"1700",	"1705",	"1707",	"1711",	"1726",	"1729",	"1730",	"1746",	"1747",	"1766",	"1819",	"1821",	"1846",	"1853",	"1878",	"1879",	"1891",	"1902",	"1905",	"1929",	"1938",	"1948",	"1950",	"1958",	"1959",	"1974",	"1998",	"2015",	"2033",	"2036",	"2045",	"2048",	"2051",	"2113",	"2123",	"2158",	"2169",	"2187",	"2188",	"2193",	"2223",	"2224",	"2226",	"2242",	"2254",	"2255",	"2261",	"2282",	"2288",	"2295",	"2300",	"2302",	"2308",	"2309",	"2318",	"2324",	"2332",	"2344",	"2355",	"2357",	"2358",	"2379",	"2381",	"2401",	"2414",	"2416",	"2417",	"2443",	"2444",	"2447",	"2453",	"2492",	"2493",	"2514",	"2515",	"2519",	"2530",	"2541",	"2545",	"2582",	"2598",	"2631",	"2632",	"2636",	"2641",	"2642",	"2655",	"2668",	"2685",	"2701",	"2716",	"2717",	"2723",	"2725",	"2731",	"2732",	"2766",	"2768",	"2782",	"2804",	"2809",	"2812",	"2815",	"2819",	"2841",	"2853",	"2876",	"2886",	"2891",	"2896",	"2902",	"2909",	"2913")
+
+# NAs for outgoing ties only
+net2[NA22, ] <- NA
+```
+
+## Save datasets for Rsiena models
+```{r}
+save(net1,     file = "data/net1.RData")
+save(net2,     file = "data/net2.RData")
+save(frq1,     file = "data/frq1.Rdata")
+save(yrs1,     file = "data/yrs1.Rdata")
+save(net_acad, file = "data/net_acad.Rdata")
+save(net_asst, file = "data/net_asst.Rdata")
+save(df,       file = "data/df.RData")
+```
+
+

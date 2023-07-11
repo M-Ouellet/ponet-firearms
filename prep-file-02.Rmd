@@ -1,0 +1,950 @@
+---
+title: "PoNet Stochastic Actor Oriented Models"
+subtitle: 'This file estimates RSiena models using the PoNet data'
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+\newpage
+
+# Data prep
+
+## Load libraries
+
+Load libraries
+```{r message = FALSE, warning = FALSE}
+library(RSiena)         # siena models
+library(tidyverse)      # data management
+```
+
+## Load data
+```{r}
+# master dataframe
+load("data/df.RData")
+
+# network data
+load("data/net1.RData")
+load("data/net2.RData")
+load("data/net_acad.Rdata")
+load("data/net_asst.Rdata")
+```
+
+# Prep RSiena objects
+
+## Create dependent network objects
+
+Convert friend network to dependent network variable
+```{r}
+# convert network to 'dependent network variable' (RSiena object)
+frd <- sienaDependent(array(c(net1, net2),
+                             dim = c(1584, 1584, 2)))
+
+```
+
+Gen dependent behavioral outcome - binary firearm discharge
+```{r}
+# gen outcome
+gun.bin <- select(df, gun_fire_bin.1, gun_fire_bin.2)
+
+# convert outcome into matrix
+gun.bin.mat <- as.matrix(gun.bin)
+
+# convert to rSiena object
+gun.bin <- sienaDependent(gun.bin.mat, type = "behavior")
+```
+
+Gen dependent behavioral categorical - firearm use (none = 0, draw = 1, discharge = 2)
+```{r}
+# gen outcome
+gun.cat <- select(df, gun_cat.1, gun_cat.2)
+
+# convert outcome into matrix
+gun.cat.mat <- as.matrix(gun.cat)
+
+# convert to rSiena object
+gun.cat <- sienaDependent(gun.cat.mat, type = "behavior")
+```
+
+Gen dependent behavioral outcome - 1-10+ firearm-use (draw + discharge)
+```{r}
+# gen outcome
+gun.10 <- select(df, gun10.1, gun10.2)
+
+# convert outcome into matrix
+gun.10.mat <- as.matrix(gun.10)
+
+# convert to RSiena object
+gun.10 <- sienaDependent(gun.10.mat, type = "behavior")
+```
+
+Gen dependent behavioral outcome - quantile firearm use (draw + discharge) - 5 categories [0, 1-2, 3-4, 5-10, 11+]
+```{r}
+# gen outcome
+gun.qt <- select(df, gun_qt.1, gun_qt.2)
+
+# convert outcome into matrix
+gun.qt.mat <- as.matrix(gun.qt)
+
+# convert to rSiena object
+gun.qt <- sienaDependent(gun.qt.mat, type = "behavior")
+```
+
+## Generate covariates
+
+Identify constant node attributes
+```{r}
+# t1 value used to predict t1-t2 transition
+male   <- df$male.1
+whi    <- df$race_whi.1 
+blk    <- df$race_blk.1
+race   <- df$race
+hisp   <- df$hisp.1
+nyears <- df$acad_yr.1 
+po     <- df$rank_po.1
+pro    <- df$proactive.1  
+street <- df$street.1  
+threat <- df$threat.1
+taser  <- df$taser.1
+nops   <- df$nops          
+
+nyears <- as.numeric(as.character(nyears))
+
+male   <- coCovar(male)
+whi    <- coCovar(whi)
+blk    <- coCovar(blk)
+race   <- coCovar(race)
+hisp   <- coCovar(hisp)
+nyears <- coCovar(nyears)
+po     <- coCovar(po)
+pro    <- coCovar(pro)
+street <- coCovar(street)
+threat <- coCovar(threat)
+taser  <- coCovar(taser)
+nops   <- coCovar(nops)
+```
+
+Gen constant dyadic covariates - treat as exogenous dyadic covariates
+```{r}
+acad <- coDyadCovar(net_acad)
+asst <- coDyadCovar(net_asst)
+```
+
+Gen siena dependent file - gun.cat [firearm use (none = 0, draw = 1, discharge = 2)]
+```{r}
+gun.data.cat <- sienaDataCreate(frd = frd, 
+                            gun     = gun.cat,
+                            male    = male,
+                            whi     = whi,
+                            blk     = blk,
+                            race    = race,
+                            hisp    = hisp,
+                            nyears  = nyears,
+                            po      = po,
+                            pro     = pro,
+                            street  = street,
+                            threat  = threat, 
+                            taser   = taser,
+                            nops    = nops,
+                            acad    = acad,
+                            asst    = asst)
+```
+
+Gen siena dependent file - gun.10 [1-10+ firearm-use (draw + discharge)]
+```{r}
+gun.data.10 <- sienaDataCreate(frd  = frd, 
+                            gun     = gun.10,
+                            male    = male,
+                            whi     = whi,
+                            blk     = blk,
+                            race    = race,
+                            hisp    = hisp,
+                            nyears  = nyears,
+                            po      = po,
+                            pro     = pro,
+                            street  = street,
+                            threat  = threat, 
+                            taser   = taser,
+                            nops    = nops,
+                            acad    = acad,
+                            asst    = asst)
+```
+
+Gen siena dependent file - gun.qt [5 categories draw + discharge [0, 1-2, 3-4, 5-10, 11+]]
+```{r}
+gun.data.qt <- sienaDataCreate(frd = frd, 
+                            gun     = gun.qt,
+                            male    = male,
+                            whi     = whi,
+                            blk     = blk,
+                            race    = race,
+                            hisp    = hisp,
+                            nyears  = nyears,
+                            po      = po,
+                            pro     = pro,
+                            street  = street,
+                            threat  = threat, 
+                            taser   = taser,
+                            nops    = nops,
+                            acad    = acad,
+                            asst    = asst)
+```
+
+Create functions to view model output
+```{r}
+outTable <- function(x) {
+	coef <- x$theta
+	coefPretty <- sprintf("%.3f", round(coef,3))
+	se <- diag(x$covtheta)**.5
+	sePretty <- sprintf("%.3f", round(se,3))
+	pval <- 2*pnorm(-abs(coef/se))
+	symp <- symnum(pval, corr = FALSE,
+               cutpoints = c(0,  .001,.01,.05, .1, 1),
+               symbols = c("***","**","*","."," "))
+    convPretty <- sprintf("%.3f", round(abs(x$tconv),3))
+    out1 <- noquote(cbind(
+		Function = x$effects[[1]], 
+		Effect = x$effects[[2]], 
+		Coef = coefPretty, 
+		StEr = sePretty, 
+		Sig = symp, 
+		Conv = convPretty))
+	out2 <- paste("Maximum Convergence Ratio:", round(x$tconv.max,3))
+	return(list(out1,out2))
+}
+```
+
+\newpage
+
+# Model specification
+
+## Model 1a - firearm-use (none = 0, draw = 1, discharge = 2) - avAlt
+gun.data.cat
+```{r}
+# create a model specification object for the data
+myEffects1a <- getEffects(gun.data.cat)
+myEffects1a
+
+# inspect all possible effects
+# write an html file to working directory
+effectsDocumentation(myEffects1a) 
+
+# test whether shared assignment and shared academy shape friendship
+myEffects1a <- includeEffects(myEffects1a, X, interaction1 = "asst", name = "frd")
+myEffects1a <- includeEffects(myEffects1a, X, interaction1 = "acad", name = "frd")
+
+# test for ego effects
+myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "gun",    name = "frd")
+myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "male",   name = "frd")
+myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "nyears", name = "frd")
+myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "po",     name = "frd")
+myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "whi",    name = "frd")
+myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "blk",    name = "frd")
+
+# test for alter effects
+myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "gun",    name = "frd")
+myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "male",   name = "frd")
+myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "nyears", name = "frd")
+myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "po",     name = "frd")
+myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "whi",    name = "frd")
+myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "blk",    name = "frd")
+
+# test for homophily effects
+myEffects1a <- includeEffects(myEffects1a, simX, interaction1  = "gun",    name = "frd")
+myEffects1a <- includeEffects(myEffects1a, sameX, interaction1 = "male",   name = "frd")
+myEffects1a <- includeEffects(myEffects1a, simX, interaction1  = "nyears", name = "frd")
+myEffects1a <- includeEffects(myEffects1a, sameX, interaction1 = "po",     name = "frd")
+myEffects1a <- includeEffects(myEffects1a, sameX, interaction1 = "race",   name = "frd")
+
+# add structural effects as control variables
+myEffects1a <- includeEffects(myEffects1a, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
+
+# behavioral effects - peer effects
+myEffects1a <- includeEffects(myEffects1a, avAlt, name = "gun", interaction1 = "frd")
+
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "male")
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "whi")
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "blk")
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "hisp")
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "nyears")
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "po")
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "pro")
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "street")
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "threat")
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "taser")
+myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "nops")
+
+# view full model specification
+myEffects1a
+```
+
+## Model 1b - firearm-use (none = 0, draw = 1, discharge = 2) - avSim
+gun.data.cat
+```{r}
+# create a model specification object for the data
+myEffects1b <- getEffects(gun.data.cat)
+myEffects1b
+
+# inspect all possible effects
+# write an html file to working directory
+effectsDocumentation(myEffects1b) 
+
+# test whether shared assignment and shared academy shape friendship
+myEffects1b <- includeEffects(myEffects1b, X, interaction1 = "asst", name = "frd")
+myEffects1b <- includeEffects(myEffects1b, X, interaction1 = "acad", name = "frd")
+
+# test for ego effects
+myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "gun",    name = "frd")
+myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "male",   name = "frd")
+myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "nyears", name = "frd")
+myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "po",     name = "frd")
+myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "whi",    name = "frd")
+myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "blk",    name = "frd")
+
+# test for alter effects
+myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "gun",    name = "frd")
+myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "male",   name = "frd")
+myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "nyears", name = "frd")
+myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "po",     name = "frd")
+myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "whi",    name = "frd")
+myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "blk",    name = "frd")
+
+# test for homophily effects
+myEffects1b <- includeEffects(myEffects1b, simX, interaction1  = "gun",    name = "frd")
+myEffects1b <- includeEffects(myEffects1b, sameX, interaction1 = "male",   name = "frd")
+myEffects1b <- includeEffects(myEffects1b, simX, interaction1  = "nyears", name = "frd")
+myEffects1b <- includeEffects(myEffects1b, sameX, interaction1 = "po",     name = "frd")
+myEffects1b <- includeEffects(myEffects1b, sameX, interaction1 = "race",   name = "frd")
+
+# add structural effects as control variables
+myEffects1b <- includeEffects(myEffects1b, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
+
+# behavioral effects - peer effects
+myEffects1b <- includeEffects(myEffects1b, avSim, name = "gun", interaction1 = "frd")
+
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "male")
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "whi")
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "blk")
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "hisp")
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "nyears")
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "po")
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "pro")
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "street")
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "threat")
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "taser")
+myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "nops")
+
+# view full model specification
+myEffects1b
+```
+
+## Model 2a - firearm-use (1-10+ draw + discharge) - avAlt
+gun.data.10
+```{r}
+# create a model specification object for the data
+myEffects2a <- getEffects(gun.data.10)
+myEffects2a
+
+# inspect all possible effects
+# write an html file to working directory
+effectsDocumentation(myEffects2a) 
+
+# test whether shared assignment and shared academy shape friendship
+myEffects2a <- includeEffects(myEffects2a, X, interaction1 = "asst", name = "frd")
+myEffects2a <- includeEffects(myEffects2a, X, interaction1 = "acad", name = "frd")
+
+# test for ego effects
+myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "gun",    name = "frd")
+myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "male",   name = "frd")
+myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "nyears", name = "frd")
+myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "po",     name = "frd")
+myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "whi",    name = "frd")
+myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "blk",    name = "frd")
+
+# test for alter effects
+myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "gun",    name = "frd")
+myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "male",   name = "frd")
+myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "nyears", name = "frd")
+myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "po",     name = "frd")
+myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "whi",    name = "frd")
+myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "blk",    name = "frd")
+
+# test for homophily effects
+myEffects2a <- includeEffects(myEffects2a, simX, interaction1  = "gun",    name = "frd")
+myEffects2a <- includeEffects(myEffects2a, sameX, interaction1 = "male",   name = "frd")
+myEffects2a <- includeEffects(myEffects2a, simX, interaction1  = "nyears", name = "frd")
+myEffects2a <- includeEffects(myEffects2a, sameX, interaction1 = "po",     name = "frd")
+myEffects2a <- includeEffects(myEffects2a, sameX, interaction1 = "race",   name = "frd")
+
+# add structural effects as control variables
+myEffects2a <- includeEffects(myEffects2a, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
+
+# behavioral effects - peer effects
+myEffects2a <- includeEffects(myEffects2a, avAlt, name = "gun", interaction1 = "frd")
+
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "male")
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "whi")
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "blk")
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "hisp")
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "nyears")
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "po")
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "pro")
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "street")
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "threat")
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "taser")
+myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "nops")
+
+# view full model specification
+myEffects2a
+```
+
+## Model 2b - firearm-use (1-10+ draw + discharge) - avSim
+gun.data.10
+```{r}
+# create a model specification object for the data
+myEffects2b <- getEffects(gun.data.10)
+myEffects2b
+
+# inspect all possible effects
+# write an html file to working directory
+effectsDocumentation(myEffects2b) 
+
+# test whether shared assignment and shared academy shape friendship
+myEffects2b <- includeEffects(myEffects2b, X, interaction1 = "asst", name = "frd")
+myEffects2b <- includeEffects(myEffects2b, X, interaction1 = "acad", name = "frd")
+
+# test for ego effects
+myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "gun",    name = "frd")
+myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "male",   name = "frd")
+myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "nyears", name = "frd")
+myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "po",     name = "frd")
+myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "whi",    name = "frd")
+myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "blk",    name = "frd")
+
+# test for alter effects
+myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "gun",    name = "frd")
+myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "male",   name = "frd")
+myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "nyears", name = "frd")
+myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "po",     name = "frd")
+myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "whi",    name = "frd")
+myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "blk",    name = "frd")
+
+# test for homophily effects
+myEffects2b <- includeEffects(myEffects2b, simX, interaction1  = "gun",    name = "frd")
+myEffects2b <- includeEffects(myEffects2b, sameX, interaction1 = "male",   name = "frd")
+myEffects2b <- includeEffects(myEffects2b, simX, interaction1  = "nyears", name = "frd")
+myEffects2b <- includeEffects(myEffects2b, sameX, interaction1 = "po",     name = "frd")
+myEffects2b <- includeEffects(myEffects2b, sameX, interaction1 = "race",   name = "frd")
+
+# add structural effects as control variables
+myEffects2b <- includeEffects(myEffects2b, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
+
+# behavioral effects - peer effects
+myEffects2b <- includeEffects(myEffects2b, avSim, name = "gun", interaction1 = "frd")
+
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "male")
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "whi")
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "blk")
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "hisp")
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "nyears")
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "po")
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "pro")
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "street")
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "threat")
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "taser")
+myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "nops")
+
+# view full model specification
+myEffects2b
+```
+
+## Model 3a - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avAlt
+gun.data.qt
+```{r}
+# create a model specification object for the data
+myEffects3a <- getEffects(gun.data.qt)
+myEffects3a
+
+# inspect all possible effects
+# write an html file to working directory
+effectsDocumentation(myEffects3a) 
+
+# test whether shared assignment and shared academy shape friendship
+myEffects3a <- includeEffects(myEffects3a, X, interaction1 = "asst", name = "frd")
+myEffects3a <- includeEffects(myEffects3a, X, interaction1 = "acad", name = "frd")
+
+# test for ego effects
+myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "gun",    name = "frd")
+myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "male",   name = "frd")
+myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "nyears", name = "frd")
+myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "po",     name = "frd")
+myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "whi",    name = "frd")
+myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "blk",    name = "frd")
+
+# test for alter effects
+myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "gun",    name = "frd")
+myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "male",   name = "frd")
+myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "nyears", name = "frd")
+myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "po",     name = "frd")
+myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "whi",    name = "frd")
+myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "blk",    name = "frd")
+
+# test for homophily effects
+myEffects3a <- includeEffects(myEffects3a, simX, interaction1  = "gun",    name = "frd")
+myEffects3a <- includeEffects(myEffects3a, sameX, interaction1 = "male",   name = "frd")
+myEffects3a <- includeEffects(myEffects3a, simX, interaction1  = "nyears", name = "frd")
+myEffects3a <- includeEffects(myEffects3a, sameX, interaction1 = "po",     name = "frd")
+myEffects3a <- includeEffects(myEffects3a, sameX, interaction1 = "race",   name = "frd")
+
+# add structural effects as control variables
+myEffects3a <- includeEffects(myEffects3a, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
+
+# behavioral effects - peer effects
+myEffects3a <- includeEffects(myEffects3a, avAlt, name = "gun", interaction1 = "frd")
+
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "male")
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "whi")
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "blk")
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "hisp")
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "nyears")
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "po")
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "pro")
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "street")
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "threat")
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "taser")
+myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "nops")
+
+# view full model specification
+myEffects3a
+```
+
+## Model 3b - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avSim
+gun.data.qt
+```{r}
+# create a model specification object for the data
+myEffects3b <- getEffects(gun.data.qt)
+myEffects3b
+
+# inspect all possible effects
+# write an html file to working directory
+effectsDocumentation(myEffects3b) 
+
+# test whether shared assignment and shared academy shape friendship
+myEffects3b <- includeEffects(myEffects3b, X, interaction1 = "asst", name = "frd")
+myEffects3b <- includeEffects(myEffects3b, X, interaction1 = "acad", name = "frd")
+
+# test for ego effects
+myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "gun",    name = "frd")
+myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "male",   name = "frd")
+myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "nyears", name = "frd")
+myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "po",     name = "frd")
+myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "whi",    name = "frd")
+myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "blk",    name = "frd")
+
+# test for alter effects
+myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "gun",    name = "frd")
+myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "male",   name = "frd")
+myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "nyears", name = "frd")
+myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "po",     name = "frd")
+myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "whi",    name = "frd")
+myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "blk",    name = "frd")
+
+# test for homophily effects
+myEffects3b <- includeEffects(myEffects3b, simX, interaction1  = "gun",    name = "frd")
+myEffects3b <- includeEffects(myEffects3b, sameX, interaction1 = "male",   name = "frd")
+myEffects3b <- includeEffects(myEffects3b, simX, interaction1  = "nyears", name = "frd")
+myEffects3b <- includeEffects(myEffects3b, sameX, interaction1 = "po",     name = "frd")
+myEffects3b <- includeEffects(myEffects3b, sameX, interaction1 = "race",   name = "frd")
+
+# add structural effects as control variables
+myEffects3b <- includeEffects(myEffects3b, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
+
+# behavioral effects - peer effects
+myEffects3b <- includeEffects(myEffects3b, avSim, name = "gun", interaction1 = "frd")
+
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "male")
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "whi")
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "blk")
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "hisp")
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "nyears")
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "po")
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "pro")
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "street")
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "threat")
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "taser")
+myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "nops")
+
+# view full model specification
+myEffects3b
+```
+
+\newpage
+
+# Model estimation
+
+## Model 1a - firearm-use (none = 0, draw = 1, discharge = 2) - avAlt
+```{r, eval = FALSE}
+# create an object with settings to tune the estimation algorithm:
+modelOptions1a <- sienaAlgorithmCreate(
+	projname ='gun.data.cat', MaxDegree = c(frd = 10),  
+	doubleAveraging = 0, diagonalize = .2)  
+
+# estimate the model
+myResults1a <- siena07(modelOptions1a, data = gun.data.cat,
+	effects = myEffects1a, batch = FALSE, verbose = FALSE, returnDeps = TRUE
+    ) 
+
+# report the results
+myResults1a         
+
+# examine results
+outTable(myResults1a)
+
+# assign final estimates to myres
+model1a <- myResults1a
+
+# obtain results in html format
+xtable(myResults1a, file="model1a.htm", type="html", digits = 3)
+```
+
+GOF Model 1a 
+```{r, eval = FALSE}
+# indegree - gof
+( gof.id.1a <- sienaGOF(myResults1a, verbose=TRUE, varName="frd", IndegreeDistribution,
+     join=T, cumulative=F) )
+jpeg(file = "output/gofid1a.jpeg")
+plot(gof.id.1a)
+dev.off()
+
+# outdegree - gof
+( gof.od.1a <- sienaGOF(myResults1a, verbose=TRUE, varName="frd", OutdegreeDistribution,
+     join=T, cumulative=F) )
+jpeg(file = "output/gofod1a.jpeg")
+plot(gof.od.1a)
+dev.off()
+
+# triad census - gof
+( gof.tc.1a <- sienaGOF(myResults1a, verbose=TRUE, varName="frd", TriadCensus,
+     join=T, levls=0:10) )
+jpeg(file = "output/goftc1a.jpeg")
+plot(gof.tc.1a)
+dev.off()
+
+# overall behavior distribution - gof
+( gof.behaviour.1a <- sienaGOF(myResults1a, BehaviorDistribution,
+	verbose=TRUE,join=TRUE,varName="gun") )
+jpeg(file = "output/gofbehaviour1a.jpeg")
+plot(gof.behaviour.1a)
+dev.off()
+```
+
+## Model 1b - firearm-use (none = 0, draw = 1, discharge = 2) - avSim
+```{r, eval = FALSE}
+# Create an object with settings to tune the estimation algorithm:
+modelOptions1b <- sienaAlgorithmCreate(
+	projname ='gun.data.cat', MaxDegree = c(frd = 10),  
+	doubleAveraging = 0, diagonalize = .2)  
+
+# estimate the model
+myResults1b <- siena07(modelOptions1b, data = gun.data.cat,
+	effects = myEffects1b, batch = FALSE, verbose = FALSE, returnDeps = TRUE
+    )  
+
+# report the results
+myResults1b 
+
+# examine results
+outTable(myResults1b)
+
+# assign final estimates to myres
+model1b <- myResults1b
+
+# obtain results in html format
+xtable(myResults1b, file="model1b.htm", type="html", digits = 3)
+```
+
+GOF Model 1b 
+```{r, eval = FALSE}
+# indegree - gof
+( gof.id.1b <- sienaGOF(myResults1b, verbose=TRUE, varName="frd", IndegreeDistribution,
+     join=T, cumulative=F) )
+jpeg(file = "output/gofid1b.jpeg")
+plot(gof.id.1b)
+dev.off()
+
+# outdegree - gof
+( gof.od.1b <- sienaGOF(myResults1b, verbose=TRUE, varName="frd", OutdegreeDistribution,
+     join=T, cumulative=F) )
+jpeg(file = "output/gofod1b.jpeg")
+plot(gof.od.1b)
+dev.off()
+
+# triad census - gof
+( gof.tc.1b <- sienaGOF(myResults1b, verbose=TRUE, varName="frd", TriadCensus,
+     join=T, levls=0:10) )
+jpeg(file = "output/goftc1b.jpeg")
+plot(gof.tc.1b)
+dev.off()
+
+# overall behavior distribution - gof
+( gof.behaviour.1b <- sienaGOF(myResults1b, BehaviorDistribution,
+	verbose=TRUE,join=TRUE,varName="gun") )
+jpeg(file = "output/gofbehaviour1b.jpeg")
+plot(gof.behaviour.1b)
+dev.off()
+```
+
+## Model 2a - firearm-use (1-10+ draw + discharge) - avAlt 
+gun.data.10 Does not converge
+```{r, eval = FALSE}
+# Create an object with settings to tune the estimation algorithm:
+# modelOptions2a <- sienaAlgorithmCreate(
+#	projname ='gun.data.10', MaxDegree = c(frd = 10),  
+#	doubleAveraging = 0, diagonalize = .2)  
+
+
+# Estimate the model
+# myResults2a <- siena07(modelOptions2a, data = gun.data.10,
+#	effects = myEffects2a, batch = FALSE, verbose = FALSE, returnDeps = TRUE
+#    )    # if multiple processors desired, comment out this line and run the next
+# , initC=T, useCluster=TRUE, nbrNodes=3) # replace "3" with your number of processors-1
+
+# report the results
+#myResults2a 
+
+# examine fuller report of results (shows score tests)
+# summary(myResults2a)
+
+# examine results
+#outTable(myResults2a)
+
+# assign final estimates to myres
+#model2a <- myResults2a
+
+# obtain results in html format
+#xtable(myResults2a, file="model2a.htm", type="html", digits = 3)
+```
+
+GOF Model 2a 
+```{r, eval = FALSE}
+# indegree - gof
+#( gof.id.2a <- sienaGOF(myResults2a, verbose=TRUE, varName="frd", IndegreeDistribution,
+#     join=T, cumulative=F) )
+#jpeg(file = "output/gofid2a.jpeg")
+#plot(gof.id.2a)
+#dev.off()
+
+# outdegree - gof
+#( gof.od.2a <- sienaGOF(myResults2a, verbose=TRUE, varName="frd", OutdegreeDistribution,
+#     join=T, cumulative=F) )
+#jpeg(file = "output/gofod2a.jpeg")
+#plot(gof.od.2a)
+#dev.off()
+
+# triad census - gof
+#( gof.tc.2a <- sienaGOF(myResults2a, verbose=TRUE, varName="frd", TriadCensus,
+#     join=T, levls=0:10) )
+#jpeg(file = "output/goftc2a.jpeg")
+#plot(gof.tc.2a)
+#dev.off()
+
+# goodness of fit overall behavior distribution
+#( gof.behaviour.2a <- sienaGOF(myResults2a, BehaviorDistribution,
+#	verbose=TRUE,join=TRUE,varName="gun") )
+#jpeg(file = "output/gofbehaviour2a.jpeg")
+#plot(gof.behaviour.2a)
+#dev.off()
+```
+
+## Model 2b - firearm-use (1-10+ draw + discharge) - avSim
+gun.data.10 Does not converge
+```{r, eval = FALSE}
+# Create an object with settings to tune the estimation algorithm:
+#modelOptions2b <- sienaAlgorithmCreate(
+#	projname ='gun.data.10', MaxDegree = c(frd = 10),  
+#	doubleAveraging = 0, diagonalize = .2)  
+
+# Estimate the model
+#myResults2b <- siena07(modelOptions2b, data = gun.data.10,
+#	effects = myEffects2b, batch = FALSE, verbose = FALSE, returnDeps = TRUE
+#    )    # if multiple processors desired, comment out this line and run the next
+# , initC=T, useCluster=TRUE, nbrNodes=3) # replace "3" with your number of processors-1
+
+# report results
+#myResults2b 
+
+# examine fuller report of results (shows score tests)
+# summary(myResults2b)
+
+# examine results
+#outTable(myResults2b)
+
+# assign final estimates to myres
+#model1 <- myResults2b
+
+# obtain results in html format
+#xtable(myResults2b, file="model2b.htm", type="html", digits = 3)
+```
+
+GOF Model 2b 
+```{r, eval = FALSE}
+# indegree - gof
+#( gof.id.2b <- sienaGOF(myResults2b, verbose=TRUE, varName="frd", IndegreeDistribution,
+#     join=T, cumulative=F) )
+#jpeg(file = "output/gofid2b.jpeg")
+#plot(gof.id.2b)
+#dev.off()
+
+# outdegree - gof
+#( gof.od.2b <- sienaGOF(myResults2b, verbose=TRUE, varName="frd", OutdegreeDistribution,
+#     join=T, cumulative=F) )
+#jpeg(file = "output/gofod2b.jpeg")
+#plot(gof.od.2b)
+#dev.off()
+
+# triad census - gof
+#( gof.tc.2b <- sienaGOF(myResults2b, verbose=TRUE, varName="frd", TriadCensus,
+#     join=T, levls=0:10) )
+#jpeg(file = "output/goftc2b.jpeg")
+#plot(gof.tc.2b)
+#dev.off()
+
+# overall behavior distribution - gof
+#( gof.behaviour.2b <- sienaGOF(myResults2b, BehaviorDistribution,
+#	verbose=TRUE,join=TRUE,varName="gun") )
+#jpeg(file = "output/gofbehaviour2b.jpeg")
+#plot(gof.behaviour.2b)
+#dev.off()
+```
+
+## Model 3a - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avAlt
+```{r, eval = FALSE}
+# create an object with settings to tune the estimation algorithm:
+modelOptions3a <- sienaAlgorithmCreate(
+	projname ='gun.data.qt', MaxDegree = c(frd = 10),  
+	doubleAveraging = 0, diagonalize = .2)  
+
+# estimate the model
+myResults3a <- siena07(modelOptions3a, data = gun.data.qt,
+	effects = myEffects3a, batch = FALSE, verbose = FALSE, returnDeps = TRUE
+    ) 
+
+# report results
+myResults3a 
+
+# examine results
+outTable(myResults3a)
+
+# assign final estimates to myres
+model3a <- myResults3a
+
+# obtain results in html format
+xtable(myResults3a, file="model3a.htm", type="html", digits = 3)
+# xtable(myAttempt2_3a, file="model3a_2.htm", type="html", digits = 3)
+```
+
+GOF Model 3a 
+```{r, eval = FALSE}
+# indegree - gof
+( gof.id.3a <- sienaGOF(myResults3a, verbose=TRUE, varName="frd", IndegreeDistribution,
+     join=T, cumulative=F) )
+jpeg(file = "output/gofid3a.jpeg")
+plot(gof.id.3a)
+dev.off()
+
+# outdegree - gof
+( gof.od.3a <- sienaGOF(myResults3a, verbose=TRUE, varName="frd", OutdegreeDistribution,
+     join=T, cumulative=F) )
+jpeg(file = "output/gofod3a.jpeg")
+plot(gof.od.3a)
+dev.off()
+
+# triad census - gof
+( gof.tc.3a <- sienaGOF(myResults3a, verbose=TRUE, varName="frd", TriadCensus,
+     join=T, levls=0:10) )
+jpeg(file = "output/goftc3a.jpeg")
+plot(gof.tc.3a)
+dev.off()
+
+# overall behavior distribution - gof
+( gof.behaviour.3a <- sienaGOF(myResults3a, BehaviorDistribution,
+	verbose=TRUE,join=TRUE,varName="gun") )
+jpeg(file = "output/gofbehaviour3a.jpeg")
+plot(gof.behaviour.3a)
+dev.off()
+```
+
+## Model 3b - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avSim
+```{r, eval = FALSE}
+# create an object with settings to tune the estimation algorithm:
+modelOptions3b <- sienaAlgorithmCreate(
+	projname ='gun.data.qt', MaxDegree = c(frd = 10),  
+	doubleAveraging = 0, diagonalize = .2) 
+
+# estimate the model
+myResults3b <- siena07(modelOptions3b, data = gun.data.qt,
+	effects = myEffects3b, batch = FALSE, verbose = FALSE, returnDeps = TRUE
+    )  
+
+# report the results
+myResults3b    
+# diagnostic checks
+# If 'Overall maximum convergence ratio' is greater than .25 rerun the model
+# and use previous estimates as starting values (prevAns option)
+# myAttempt2_3b <- siena07(modelOptions3b, data = gun.data.qt, effects = myEffects3b, prevAns = myResults3b, returnDeps = TRUE)
+# To identify troublesome effects, look for high 'Convergence t-ratios' (>.3b) 
+
+# gen algorithm to improve model fit
+ m3b_algo <- sienaAlgorithmCreate(projname = 'm3b_algo',diagonalize = 0.4, doubleAveraging = 0, n3=10000)
+# (ans <- siena07(m3b_algo, data = gun.data.qt, effects = myEffects3b, prevAns = myResults3b))
+myAttempt3_3b <- siena07(m3b_algo, data=gun.data.qt, effects=myEffects3b, prevAns= myResults3b, batch=FALSE, returnDeps = TRUE)
+
+# examine fuller report of results (shows score tests)
+# summary(myResults3b)
+# summary(myAttempt2_3b)
+
+# examine results
+outTable(myResults3b)
+# outTable(myAttempt2_3b)
+outTable(myAttempt3_3b)
+
+# assign final estimates to myres
+model3b <- myResults3b
+
+# obtain results in html format
+xtable(myResults3b, file="model3b.htm", type="html", digits = 3)
+xtable(myAttempt2_3b, file="model3b_2.htm", type="html", digits = 3)
+xtable(myAttempt3_3b, file="model3b_3.htm", type="html", digits = 3)
+```
+
+GOF Model 3b 
+```{r, eval = FALSE}
+# indegree - gof
+( gof.id.3b <- sienaGOF(myAttempt3_3b, verbose=TRUE, varName="frd", IndegreeDistribution,
+     join=T, cumulative=F) )
+jpeg(file = "output/gofid3b_2.jpeg")
+plot(gof.id.3b)
+dev.off()
+
+# outdegree - gof
+( gof.od.3b <- sienaGOF(myAttempt3_3b, verbose=TRUE, varName="frd", OutdegreeDistribution,
+     join=T, cumulative=F) )
+jpeg(file = "output/gofod3b_2.jpeg")
+plot(gof.od.3b)
+dev.off()
+
+# triad census - gof
+( gof.tc.3b <- sienaGOF(myAttempt3_3b, verbose=TRUE, varName="frd", TriadCensus,
+     join=T, levls=0:10) )
+jpeg(file = "output/goftc3b_2.jpeg")
+plot(gof.tc.3b)
+dev.off()
+
+# overall behavior distribution - gof
+( gof.behaviour.3b <- sienaGOF(myAttempt3_3b, BehaviorDistribution,
+	verbose=TRUE,join=TRUE,varName="gun") )
+jpeg(file = "output/gofbehaviour3b_2.jpeg")
+plot(gof.behaviour.3b)
+dev.off()
+```
