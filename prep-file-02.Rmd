@@ -1,950 +1,1371 @@
 ---
-title: "PoNet Stochastic Actor Oriented Models"
-subtitle: 'This file estimates RSiena models using the PoNet data'
+title: "PoNet Firearm Use and Police Friendship Networks"
+subtitle: 'Prepare XPD data for RSiena models, and create descriptive tables'
+author: ""
+date: "`r Sys.Date()`"
 output:
   html_document:
     toc: true
     number_sections: true
+    toc_depth: 2
+    toc_float: true
+    df_print: paged
+    theme: readable
 ---
 
-\newpage
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE)
+```
 
-# Data prep
+<!-- ------------------------------------------------------------------ -->
 
 ## Load libraries
 
-Load libraries
 ```{r message = FALSE, warning = FALSE}
-library(RSiena)         # siena models
-library(tidyverse)      # data management
+library(tidyverse)  # data management and plotting
+library(lubridate)  # date helpers
+library(RSiena)     # stochastic actor–oriented models
+library(igraph)     # network measures
+library(Hmisc)      # cut2(), categorizing data
+library(psych)      # descriptives & kappa
 ```
 
-## Load data
-```{r}
-# master dataframe
-load("data/df.RData")
+---
 
-# network data
-load("data/net1.RData")
-load("data/net2.RData")
-load("data/net_acad.Rdata")
-load("data/net_asst.Rdata")
+## Read and tidy force data
+```{r}
+force <- read.csv("data/ponet_xpd_force19_22.csv") # force data 2019-2022
 ```
 
-# Prep RSiena objects
-
-## Create dependent network objects
-
-Convert friend network to dependent network variable
 ```{r}
-# convert network to 'dependent network variable' (RSiena object)
-frd <- sienaDependent(array(c(net1, net2),
-                             dim = c(1584, 1584, 2)))
+# gen year variable for year force incident occurred
+force$offense.date <- ymd(force$offense.date)
+force$offense.year <- year(force$offense.date)
+
+# gen firearm-variable
+force <- force %>% 
+  mutate(gun_force = ifelse(method.used == "firearm" |
+                                method.used == "firearm/taser", 1, 0))
+
+# gen taser-variable
+force <- force %>%
+  mutate(taser_force = ifelse(method.used == "taser" |
+                              method.used == "asp/taser" |
+                              method.used == "taser/asp" |
+                              method.used == "firearm/taser" |
+                              method.used == "oc/taser" |
+                              method.used == "taser/oc" |
+                              method.used == "physical/taser" |
+                              method.used == "Physical/taser/asp" |
+                              method.used == "physical/asp/taser" |
+                              method.used == "physical/oc/taser", 1, 0))
+
+# split by year and derive annual counts
+force21 <- force %>% filter(offense.year == "2021")
+force22 <- force %>% filter(offense.year == "2022")
+
+# gen number force incidents annually
+force21 <- force21 %>% group_by(uid) %>% mutate(nforce1 = n_distinct(incident.no, na.rm = T))
+force22 <- force22 %>% group_by(uid) %>% mutate(nforce2 = n_distinct(incident.no, na.rm = T))
+
+# gen number firearm incidents annually
+force21 <- force21 %>% group_by(uid) %>% mutate(ngun_force1 = sum(gun_force, na.rm = T))
+force22 <- force22 %>% group_by(uid) %>% mutate(ngun_force2 = sum(gun_force, na.rm = T))
+
+# gen number taser incidents annually
+force21 <- force21 %>% group_by(uid) %>% mutate(ntaser_force1 = sum(taser_force, na.rm = T))
+force22 <- force22 %>% group_by(uid) %>% mutate(ntaser_force2 = sum(taser_force, na.rm = T))
+
+# select relevant columns
+force21 <- force21 %>% select(offense.year, uid, nforce1, ngun_force1, ntaser_force1)
+force22 <- force22 %>% select(offense.year, uid, nforce2, ngun_force2, ntaser_force2)
+
+# collapse to only include one officer per year
+force21 <- force21 %>%
+  group_by(uid) %>%
+  slice(1) %>%
+  ungroup()
+
+force22 <- force22 %>%
+  group_by(uid) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+---
+
+## Read and tidy OPS complaints
+```{r}
+# read in ops data
+ops <- read.csv("data/ponet_xpd_ops.csv") # ops data
+
+# gen year variable for year ops incident occurred (only using date from first incident within complaint)
+ops$idate <- ymd(ops$idate_1)
+ops$iyear <- year(ops$idate)
+
+# remove ops incidents from 2022 >= (covariate is only measured at wave 1)
+ops <- ops %>%
+  filter(iyear < "2022")
+
+# gen number ops incidents variable
+ops <- ops %>%
+  group_by(uid) %>%
+  mutate(nops1 = n_distinct(iid))
+
+# collapse to officer-level selecting only relevant vars for analysis
+ops <- ops %>%
+  select(uid, nops1) %>%
+  group_by(uid) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+Gen ops variables - up until 2022
+```{r}
+# read in ops data
+ops22 <- read.csv("data/ponet_xpd_ops.csv") # ops data
+
+# gen year variable for year ops incident occurred (only using date from first incident within complaint)
+ops22$idate <- ymd(ops22$idate_1)
+ops22$iyear <- year(ops22$idate)
+
+# gen number ops incidents variable
+ops22 <- ops22 %>%
+  group_by(uid) %>%
+  mutate(nops2 = n_distinct(iid))
+
+# collapse to officer-level selecting only relevant vars for analysis
+ops22 <- ops22 %>%
+  select(uid, nops2) %>%
+  group_by(uid) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+---
+
+## Import survey waves
+```{r}
+df21   <- read.csv("data/ponet_xpd_2021.csv")      # survey data 2021
+df22   <- read.csv("data/ponet_xpd_2022.csv")      # survey data 2022
+```
+
+Clean dept asst and rank data for 2022 for officers missing this info on survey 2022 - taken from roster Nov 2022
+```{r}
+# if rank is missing replace w/ dept_rank
+df21 <- df21 %>%
+  mutate(rank = ifelse(is.na(rank), dept_rank21, rank))
+df22 <- df22 %>%
+  mutate(rank = ifelse(is.na(rank), dept_rank22, rank))
+
+# if asst1 is missing replace w/ dept_asst22
+df21 <- df21 %>%
+  mutate(asst1 = ifelse(is.na(asst1), dept_asst21, asst1))
+df22 <- df22 %>%
+  mutate(asst1 = ifelse(is.na(asst1), dept_asst22, asst1))
+
+# if street1 is missing replace w/ dept_street22
+df21 <- df21 %>%
+  mutate(street1 = ifelse(is.na(street1), dept_street21, street1))
+df22 <- df22 %>%
+  mutate(street1 = ifelse(is.na(street1), dept_street22, street1))
+
+# if proactive1 is missing replace w/ dept_pro22
+df21 <- df21 %>%
+  mutate(proactive1 = ifelse(is.na(proactive1), dept_pro21, proactive1))
+df22 <- df22 %>%
+  mutate(proactive1 = ifelse(is.na(proactive1), dept_pro22, proactive1))
+```
+
+Merge waves and add suffixes
+```{r}
+df <- full_join(df21, df22, by = c("uid"))
+
+colnames(df) <- gsub("\\.x$",'.1',colnames(df))
+colnames(df) <- gsub("\\.y$",'.2',colnames(df))
+```
+
+---
+
+## Attach force & OPS counts to survey data
+```{r}
+df <- left_join(df, force21, by = c("wave.1" = "offense.year", "uid" = "uid"))  # merge 2021 force data
+df <- left_join(df, force22, by = c("wave.2" = "offense.year", "uid" = "uid"))  # merge 2022 force data
+```
+
+If nforce, ngun_force, or ntaser_force are missing in df, replace w/ 0 (i.e. no force reports)
+```{r}
+df <- df %>%
+  mutate(nforce1       = ifelse(is.na(nforce1), 0, nforce1),
+         nforce2       = ifelse(is.na(nforce2), 0, nforce2),
+         ngun_force1   = ifelse(is.na(ngun_force1), 0, ngun_force1),
+         ngun_force2   = ifelse(is.na(ngun_force2), 0, ngun_force2),
+         ntaser_force1 = ifelse(is.na(ntaser_force1), 0, ntaser_force1),
+         ntaser_force2 = ifelse(is.na(ntaser_force2), 0, ntaser_force2),)
+```
+
+Merge survey data and ops data
+```{r}
+df <- left_join(df, ops, by = c("uid"))
+df <- left_join(df, ops22, by = c("uid"))
+```
+
+## Compare official records and self-reports Tables A and B
+
+Compare firearm discharge in surveys w/ force reports - waves 1 and 2 combined. Table A
+```{r}
+# restructure the data into long format so can compare both waves
+dfc <- df %>% select(uid, gun_fire.1, ngun_force1,
+                          gun_fire.2, ngun_force2) %>%
+              rename("ngun_force.1" = "ngun_force1",
+                     "ngun_force.2" = "ngun_force2") %>%
+              pivot_longer(
+                cols = -uid,
+                names_to = c(".value", "wave"),
+                names_sep = "\\."
+              )
+
+# Remove rows with NA values in either variable
+dfc <- dfc[!is.na(dfc$gun_fire) & !is.na(dfc$ngun_force), ]
+
+# gen binary variables
+dfc <- dfc %>%
+  mutate(survey_bin = ifelse(gun_fire > 0, 1, 0),
+         record_bin = ifelse(ngun_force > 0, 1, 0))
+
+# isolate relevant vars
+survey <- dfc$survey_bin
+record <- dfc$record_bin 
+
+# gen contingency table
+matrix <- table(survey, record)
+
+# print the contingency table
+print(matrix)
+
+# Calculate Accuracy
+accuracy <- sum(diag(matrix)) / sum(matrix)
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- matrix[2, 2] / (matrix[2, 2] + matrix[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- matrix[1, 1] / (matrix[1, 1] + matrix[2, 1])
+
+# Calculate Cohen's Kappa for agreement
+library(psych)
+kappa_result <- cohen.kappa(matrix)
+
+# Output the results
+cat("Confusion Matrix:\n") 
+# Rows represent the self-report (0 = no, 1 = yes).
+# Columns represent the official records (0 = no, 1 = yes).
+print(matrix)
+cat("\nAccuracy:", accuracy, "\n")
+# Accuracy: Proportion of all cases that were correctly classified (both positives and negatives).
+cat("Sensitivity (True Positive Rate):", sensitivity, "\n")
+# Sensitivity: How well the self-report correctly identifies gun cases compared to the official record.
+cat("Specificity (True Negative Rate):", specificity, "\n")
+# Specificity: How well the self-report identifies non-gun cases (true negatives).
+cat("Cohen's Kappa:", kappa_result$kappa, "\n")
 
 ```
 
-Gen dependent behavioral outcome - binary firearm discharge
+
+Compare taser discharge in surveys w/ force reports - WAVES 1 & 2 COMBINED. Table B
 ```{r}
-# gen outcome
-gun.bin <- select(df, gun_fire_bin.1, gun_fire_bin.2)
+# restructure the data into long format so can compare both waves
+dfc <- df %>% select(uid, taser_fire.1, ntaser_force1,
+                          taser_fire.2, ntaser_force2) %>%
+              rename("ntaser_force.1" = "ntaser_force1",
+                     "ntaser_force.2" = "ntaser_force2") %>%
+              pivot_longer(
+                cols = -uid,
+                names_to = c(".value", "wave"),
+                names_sep = "\\."
+              )
 
-# convert outcome into matrix
-gun.bin.mat <- as.matrix(gun.bin)
+# Remove rows with NA values in either variable
+dfc <- dfc[!is.na(dfc$taser_fire) & !is.na(dfc$ntaser_force), ]
 
-# convert to rSiena object
-gun.bin <- sienaDependent(gun.bin.mat, type = "behavior")
+# gen binary variables
+dfc <- dfc %>%
+  mutate(survey_bin = ifelse(taser_fire > 0, 1, 0),
+         record_bin = ifelse(ntaser_force > 0, 1, 0))
+
+# isolate relevant vars
+survey <- dfc$survey_bin
+record <- dfc$record_bin 
+
+# gen contingency table
+matrix <- table(survey, record)
+
+# print the contingency table
+print(matrix)
+
+# Calculate Accuracy
+accuracy <- sum(diag(matrix)) / sum(matrix)
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- matrix[2, 2] / (matrix[2, 2] + matrix[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- matrix[1, 1] / (matrix[1, 1] + matrix[2, 1])
+
+# Calculate Cohen's Kappa for agreement
+library(psych)
+kappa_result <- cohen.kappa(matrix)
+
+# Output the results
+cat("Confusion Matrix:\n") 
+print(matrix)
+cat("\nAccuracy:", accuracy, "\n")
+cat("Sensitivity (True Positive Rate):", sensitivity, "\n")
+cat("Specificity (True Negative Rate):", specificity, "\n")
+cat("Cohen's Kappa:", kappa_result$kappa, "\n")
 ```
 
-Gen dependent behavioral categorical - firearm use (none = 0, draw = 1, discharge = 2)
+---
+
+## Generate variables for analysis
+
+For analysis used official complaint records - Use nops1 (ops reports) unless officer missing ops reports, then use survey data
 ```{r}
-# gen outcome
-gun.cat <- select(df, gun_cat.1, gun_cat.2)
-
-# convert outcome into matrix
-gun.cat.mat <- as.matrix(gun.cat)
-
-# convert to rSiena object
-gun.cat <- sienaDependent(gun.cat.mat, type = "behavior")
+df <- df %>%
+  mutate(nops = ifelse(is.na(nops.1), nops1, nops.1))
+df <- df %>%
+  mutate(nops2 = ifelse(is.na(nops.2), nops2, nops.2))
 ```
 
-Gen dependent behavioral outcome - 1-10+ firearm-use (draw + discharge)
+Merge weapon data from force reports w/ survey data (i.e. if report discharging firearm in one or the other (don't sum up across))
 ```{r}
-# gen outcome
-gun.10 <- select(df, gun10.1, gun10.2)
+# take highest firearm use across force data and survey data
+df <- df %>%
+  mutate(gun_fire.1 = ifelse(ngun_force1 > gun_fire.1, ngun_force1, gun_fire.1),
+         gun_fire.2 = ifelse(ngun_force2 > gun_fire.2, ngun_force2, gun_fire.2))
 
-# convert outcome into matrix
-gun.10.mat <- as.matrix(gun.10)
-
-# convert to RSiena object
-gun.10 <- sienaDependent(gun.10.mat, type = "behavior")
+# take highest taser use across force data and survey data
+df <- df %>%
+  mutate(taser_fire.1 = ifelse(ntaser_force1 > taser_fire.1, ntaser_force1, taser_fire.1),
+         taser_fire.2 = ifelse(ntaser_force2 > taser_fire.2, ntaser_force2, taser_fire.2))
 ```
 
-Gen dependent behavioral outcome - quantile firearm use (draw + discharge) - 5 categories [0, 1-2, 3-4, 5-10, 11+]
+
+Generate outcome measures
 ```{r}
-# gen outcome
-gun.qt <- select(df, gun_qt.1, gun_qt.2)
+# gen binary indicator of gun discharged past year
+df <- df %>%
+  mutate(gun_fire_bin.1 = ifelse(gun_fire.1 > 0, 1, 0),
+         gun_fire_bin.2 = ifelse(gun_fire.2 > 0, 1, 0))
 
-# convert outcome into matrix
-gun.qt.mat <- as.matrix(gun.qt)
+# gen continuous measure of gun use (draw + fire) wave 1 - (draw + fire + point) wave 2
+df <- df %>%
+  mutate(gun.1 = gun_draw.1 + gun_fire.1,
+         gun.2 = gun_draw.2 + gun_fire.2)
 
-# convert to rSiena object
-gun.qt <- sienaDependent(gun.qt.mat, type = "behavior")
+# gen categorical variable of gun use (0 = no gun use, 1 = draw gun, 2 = fire gun)
+df <- df %>%
+  mutate(gun_cat.1 = ifelse(gun_fire.1 > 0, 2,
+                            ifelse(gun_draw.1 > 0, 1,
+                                   ifelse(gun_fire.1 == 0 & gun_draw.1 == 0, 0, NA))))
+df <- df %>%
+  mutate(gun_cat.2 = ifelse(gun_fire.2 > 0, 2,
+                            ifelse(gun_draw.2 > 0, 1,
+                                   ifelse(gun_fire.2 == 0 & gun_draw.2 == 0, 0, NA))))
+
+# split based on equal values within groups - append gun waves 1 and 2 datasets together to determine quantiles
+x <- select(df, gun.1) %>% rename("gun" = "gun.1")
+y <- select(df, gun.2) %>% rename("gun" = "gun.2")
+z <- rbind(x, y)
+
+z$gun_qt <- cut2(z$gun, g = 10) # gens 5 categories (0; 1-2; 3-4; 5-10; 11-100+)
+
+# gen dv using above values and standardizing across waves
+df <- df %>%
+  mutate(gun_qt.1 = ifelse(gun.1 == 0, 1,                           #[0]
+                    ifelse(gun.1 >= 1  & gun.1 <= 2, 2,             #[1-2]
+                    ifelse(gun.1 >= 3  & gun.1 <= 4, 3,             #[3-4]
+                    ifelse(gun.1 >= 5  & gun.1 <= 10, 4,            #[5-10]
+                    ifelse(gun.1 >= 11 & gun.1 <= 101, 5, NA))))))  #[11-100+]
+
+df <- df %>%
+  mutate(gun_qt.2 = ifelse(gun.2 == 0, 1,                           #[0]
+                    ifelse(gun.2 >= 1  & gun.2 <= 2, 2,             #[1-2]
+                    ifelse(gun.2 >= 3  & gun.2 <= 4, 3,             #[3-4]
+                    ifelse(gun.2 >= 5  & gun.2 <= 10, 4,            #[5-10]
+                    ifelse(gun.2 >= 11 & gun.2 <= 101, 5, NA))))))  #[11-100+]
+
+# gen outcomes w/ 10 vars for gun-use
+df <- df %>%
+  mutate(gun10.1 = ifelse(gun.1 >= 10, 10, gun.1),
+         gun10.2 = ifelse(gun.2 >= 10, 10, gun.2))
 ```
 
-## Generate covariates
-
-Identify constant node attributes
+Carry forward static covariates
 ```{r}
-# t1 value used to predict t1-t2 transition
-male   <- df$male.1
-whi    <- df$race_whi.1 
-blk    <- df$race_blk.1
-race   <- df$race
-hisp   <- df$hisp.1
-nyears <- df$acad_yr.1 
-po     <- df$rank_po.1
-pro    <- df$proactive.1  
-street <- df$street.1  
-threat <- df$threat.1
-taser  <- df$taser.1
-nops   <- df$nops          
-
-nyears <- as.numeric(as.character(nyears))
-
-male   <- coCovar(male)
-whi    <- coCovar(whi)
-blk    <- coCovar(blk)
-race   <- coCovar(race)
-hisp   <- coCovar(hisp)
-nyears <- coCovar(nyears)
-po     <- coCovar(po)
-pro    <- coCovar(pro)
-street <- coCovar(street)
-threat <- coCovar(threat)
-taser  <- coCovar(taser)
-nops   <- coCovar(nops)
+df <- df %>%
+  mutate(
+    male.1 = case_when(
+      !is.na(male.1) & !is.na(male.2) & male.1 != male.2 ~ NA_real_,
+      TRUE ~ coalesce(male.1, male.2)),
+    male.2 = male.1,
+    hisp.1 = case_when(
+      !is.na(hisp.1) & !is.na(hisp.2) & hisp.1 != hisp.2 ~ NA_real_,
+      TRUE ~ coalesce(hisp.1, hisp.2)),
+    hisp.2 = hisp.1,
+    race.1 = case_when(!is.na(race.1) & !is.na(race.2) & race.1 != race.2 ~ NA_integer_,
+      TRUE ~ coalesce(race.1, race.2))) %>%
+    mutate(race.2 = race.1) %>%
+    mutate(
+    age.1 = coalesce(age.1, age.2 - 1),
+    age.2 = coalesce(age.2, age.1 + 1),
+    nyears.1 = coalesce(nyears.1, nyears.2 - 1),
+    nyears.2 = coalesce(nyears.2, nyears.1 + 1),
+    acad_yr.1 = coalesce(acad_yr.1, acad_yr.2),
+    acad_yr.2 = coalesce(acad_yr.2, acad_yr.1),
+    acad_no.1 = coalesce(acad_no.1, acad_no.2),
+    acad_no.2 = coalesce(acad_no.2, acad_no.1))
 ```
 
-Gen constant dyadic covariates - treat as exogenous dyadic covariates
+Derived covariates
 ```{r}
-acad <- coDyadCovar(net_acad)
-asst <- coDyadCovar(net_asst)
+# gen rank_po
+df <- df %>%
+  mutate(rank_po.1 = ifelse(rank.1 == "Police Officer" | rank.1 == "Senior Police Officer", 1, 0),
+         rank_po.2 = ifelse(rank.2 == "Police Officer" | rank.1 == "Senior Police Officer", 1, 0))
+
+# gen threat (in w1 only asked about threat, then w2 broken down by threat by weapon and threat by physical force no weapon)
+df <- df %>%
+  mutate(threat.1 = threat,
+         threat.2 = threat_wpn + threat_phy)
+
+# gen race
+df <- df %>%
+  mutate(race = ifelse(race.1 == 1, 1,                             # Black
+                ifelse(race.1 == 5, 2,                             # White
+                ifelse(race.1 == 2 | race.1 == 3 | race.1 == 4, 3, # Other
+                       NA))))# gen race
+df <- df %>%
+  mutate(race = ifelse(race.1 == 1, 1,               # Black
+                ifelse(race.1 == 5, 2,               # White
+                ifelse(race.1 == 2 | race.1 == 3 | race.1 == 4, 3, # Other
+                       NA))))
+
+# gen race_whi
+df <- df %>%
+  mutate(race_whi.1 = ifelse(race.1 == 5, 1, 0),
+         race_whi.2 = ifelse(race.2 == 5, 1, 0))
+
+# gen race_blk
+df <- df %>%
+  mutate(race_blk.1 = ifelse(race.1 == 1, 1, 0),
+         race_blk.2 = ifelse(race.2 == 1, 1, 0))
+
+# gen race_oth
+df <- df %>%
+  mutate(race_oth.1 = ifelse(race.1 == 2 | race.1 == 3 | race.1 == 4, 1, 0),
+         race_oth.2 = ifelse(race.2 == 2 | race.2 == 3 | race.2 == 4, 1, 0))
+
+# gen taser use
+df <- df %>%
+  mutate(taser.1 = taser_draw.1 + taser_fire.1,
+         taser.2 = taser_draw.2 + taser_fire.2)
 ```
 
-Gen siena dependent file - gun.cat [firearm use (none = 0, draw = 1, discharge = 2)]
+Gen number of ties to officers outside the department
 ```{r}
-gun.data.cat <- sienaDataCreate(frd = frd, 
-                            gun     = gun.cat,
-                            male    = male,
-                            whi     = whi,
-                            blk     = blk,
-                            race    = race,
-                            hisp    = hisp,
-                            nyears  = nyears,
-                            po      = po,
-                            pro     = pro,
-                            street  = street,
-                            threat  = threat, 
-                            taser   = taser,
-                            nops    = nops,
-                            acad    = acad,
-                            asst    = asst)
+df <- df %>%
+  rowwise() %>%
+  mutate(nties_outside.1 = sum(c_across(frd01.1:frd10.1) == "88888", na.rm = T),
+         nties_outside.2 = sum(c_across(frd01.2:frd10.2) == "88888", na.rm = T))
 ```
 
-Gen siena dependent file - gun.10 [1-10+ firearm-use (draw + discharge)]
+Gen street-level variable
 ```{r}
-gun.data.10 <- sienaDataCreate(frd  = frd, 
-                            gun     = gun.10,
-                            male    = male,
-                            whi     = whi,
-                            blk     = blk,
-                            race    = race,
-                            hisp    = hisp,
-                            nyears  = nyears,
-                            po      = po,
-                            pro     = pro,
-                            street  = street,
-                            threat  = threat, 
-                            taser   = taser,
-                            nops    = nops,
-                            acad    = acad,
-                            asst    = asst)
+# replace NA w/ 88 so ifelse statement doesn't ignore NAs
+df <- df %>% 
+  ungroup() %>%
+  mutate(street1.1x    = ifelse(is.na(street1.1), 88, street1.1),
+         street1.2x    = ifelse(is.na(street1.2), 88, street1.2),
+         street2.1x    = ifelse(is.na(street2.1), 88, street2.1),
+         street2.2x    = ifelse(is.na(street2.2), 88, street2.2),
+         proactive1.1x = ifelse(is.na(proactive1.1), 88, proactive1.1),
+         proactive1.2x = ifelse(is.na(proactive1.2), 88, proactive1.2),
+         proactive2.1x = ifelse(is.na(proactive2.1), 88, proactive2.1),
+         proactive2.2x = ifelse(is.na(proactive2.2), 88, proactive2.2),
+         rank.1        = ifelse(is.na(rank.1), 88, rank.1),
+         rank.2        = ifelse(is.na(rank.2), 88, rank.2)
+         )
+
+# gen officer street-level (and not white shirt) 
+df <- df %>%
+  mutate(street_asst = ifelse(street1.1x == 1 | street1.2x == 1 | street2.1x == 1 | street2.2x == 1, 1, 0),
+         street_rank = ifelse(rank.1 == "Captain" | rank.1 == "Major" | rank.1 == "Deputy Chief" |
+                              rank.2 == "Captain" | rank.2 == "Major" | rank.2 == "Deputy Chief", 0, 1),
+         street_asst = ifelse(street1.1x == 88 & street1.2x == 88 & street2.1x == 88 & street2.2x == 88, NA, street_asst),
+         street_rank = ifelse(rank.1 == 88 & rank.2 == 88, NA, street_rank),
+         street = ifelse(street_asst == 1 & street_rank == 1, 1, 0))
+
+# gen street-level based on past two years of assts
+df <- df %>%
+  mutate(street.1 = ifelse(street1.1x == 1 | street1.2x == 1, 1, 0),
+         street.2 = ifelse(street2.1x == 1 | street2.2x == 1, 1, 0),
+         street.1 = ifelse(street1.1x == 88 & street1.2x == 88, NA, street.1),
+         street.2 = ifelse(street2.1x == 88 & street2.2x == 88, NA, street.2))
+
+# gen proactive based on past two years of assts
+df <- df %>%
+  mutate(proactive.1 = ifelse(proactive1.1x == 1 | proactive1.2x == 1, 1, 0),
+         proactive.2 = ifelse(proactive2.1x == 1 | proactive2.2x == 1, 1, 0),
+         proactive.1 = ifelse(proactive1.1x == 88 & proactive1.2x == 88, NA, proactive.1),
+         proactive.2 = ifelse(proactive2.1x == 88 & proactive2.2x == 88, NA, proactive.2))
 ```
 
-Gen siena dependent file - gun.qt [5 categories draw + discharge [0, 1-2, 3-4, 5-10, 11+]]
+
+---
+
+## Shared academy edgelist
 ```{r}
-gun.data.qt <- sienaDataCreate(frd = frd, 
-                            gun     = gun.qt,
-                            male    = male,
-                            whi     = whi,
-                            blk     = blk,
-                            race    = race,
-                            hisp    = hisp,
-                            nyears  = nyears,
-                            po      = po,
-                            pro     = pro,
-                            street  = street,
-                            threat  = threat, 
-                            taser   = taser,
-                            nops    = nops,
-                            acad    = acad,
-                            asst    = asst)
+# Create academy edgelist
+el_acad <- df %>%
+  select(acad_no.1, uid) %>%
+  inner_join(., select(., acad_no.1, uid), by = "acad_no.1") %>%
+  unique %>%
+  arrange(uid.x, uid.y) %>%
+  rename(uid = uid.x,
+         alter = uid.y) %>%
+  select(uid, alter, acad_no.1, everything())
 ```
 
-Create functions to view model output
+Remove self-loops/duplicates and retain isolates - academy
 ```{r}
-outTable <- function(x) {
-	coef <- x$theta
-	coefPretty <- sprintf("%.3f", round(coef,3))
-	se <- diag(x$covtheta)**.5
-	sePretty <- sprintf("%.3f", round(se,3))
-	pval <- 2*pnorm(-abs(coef/se))
-	symp <- symnum(pval, corr = FALSE,
-               cutpoints = c(0,  .001,.01,.05, .1, 1),
-               symbols = c("***","**","*","."," "))
-    convPretty <- sprintf("%.3f", round(abs(x$tconv),3))
-    out1 <- noquote(cbind(
-		Function = x$effects[[1]], 
-		Effect = x$effects[[2]], 
-		Coef = coefPretty, 
-		StEr = sePretty, 
-		Sig = symp, 
-		Conv = convPretty))
-	out2 <- paste("Maximum Convergence Ratio:", round(x$tconv.max,3))
-	return(list(out1,out2))
+# remove all instances where uid and alter are connected based on shared NA academy no
+el_acad <- el_acad %>%
+  mutate(remove = ifelse(is.na(acad_no.1) & uid != alter, 1, 0)) %>%
+  filter(remove != 1) %>%
+  select(-c(remove))
+
+# gen degree 
+el_acad <- el_acad %>% group_by(uid) %>%
+  mutate(deg = n_distinct(alter, na.rm = T) - 1)
+
+# remove self-loops if deg > 0 (to retain isolates)
+el_acad <- el_acad %>%
+  mutate(remove = ifelse(uid == alter & deg > 0, 1, 0)) %>%
+  filter(remove != 1) %>%
+  select(-c(remove))
+```
+
+Convert edgelist to matrix for Rsiena
+```{r}
+# gen edge1 using cleaned edge
+el_acad <- el_acad %>% select(uid, alter)
+
+# get unique list of ALL people in the edgelist (ego and alters) - should match master network 1584 nodes
+node1 <- union(unique(el_acad$uid), unique(el_acad$alter)) 
+
+# convert to igraph object
+g_acad <- igraph::graph_from_data_frame(el_acad, directed = FALSE)
+
+# convert to matrix 
+net_acad <- as.matrix(igraph::as_adjacency_matrix(g_acad))
+
+# convert diagonal matrix to zero (remove self-loops)
+diag(net_acad) <- 0
+
+# sort rows and columns - adjacency matrix
+net_acad <- net_acad[sort(rownames(net_acad)), sort(colnames(net_acad))]
+
+# sort rows - attributes
+df <- df %>%  arrange(uid)
+
+# confirm network data and attribute data in the same order
+df$uid==rownames(network::as.sociomatrix(net_acad))
+```
+
+## Shared assignment edgelist
+```{r}
+# reshape df for asst1-asst3 var to long format
+el_asst <- df %>%
+  mutate(wave = "2021") %>%
+  pivot_longer(cols = asst1.1:asst3.1,
+               names_to = "asst_yr",
+               names_prefix = "asst",
+               values_to = "asst")
+
+# concatenate asst and asst_yr columns
+el_asst$shared_asst = paste(el_asst$asst_yr, el_asst$asst, sep = "-'")
+
+# create asst edgelist using past 3 years of assignments
+el_asst <- el_asst %>%
+  select(shared_asst, uid, wave) %>%
+  inner_join(., select(., shared_asst, uid), by = "shared_asst") %>%
+  unique %>%
+  arrange(uid.x, uid.y) %>%
+  rename(uid = uid.x,
+         alter = uid.y) %>%
+  select(uid, alter, shared_asst, everything())
+```
+
+Remove self-loops/duplicates and retain isolates - shared assignment
+```{r}
+# remove all instances where uid and alter are connected based on shared NA asst
+el_asst <- el_asst %>%
+  mutate(remove = ifelse(is.na(shared_asst) & uid != alter, 1, 0)) %>%
+  filter(remove != 1) %>%
+  select(-c(remove))
+
+# gen degree 
+el_asst <- el_asst %>% group_by(uid) %>%
+  mutate(deg = n_distinct(alter, na.rm = T) - 1)
+
+# remove self-loops if deg > 0 (to retain isolates)
+el_asst <- el_asst %>%
+  mutate(remove = ifelse(uid == alter & deg > 0, 1, 0)) %>%
+  filter(remove != 1) %>%
+  select(-c(remove))
+
+# remove duplicates - instances where ego nominated same alter more than once same wave (e.g. multiple shared assignments)
+el_asst <- el_asst %>%
+  group_by(uid, alter) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+Convert edgelist to matrix for Rsiena - shared assignment
+```{r}
+# get unique list of ALL people in the edgelist (ego and alters) - should match master network 1584 nodes
+node1 <- union(unique(el_asst$uid), unique(el_asst$alter)) # 476 nodes
+
+# convert to igraph object
+g_asst <- igraph::graph_from_data_frame(el_asst, directed = FALSE)
+
+# convert to matrix 
+net_asst <- as.matrix(igraph::as_adjacency_matrix(g_asst))
+
+# convert diagonal matrix to zero (remove self-loops)
+diag(net_asst) <- 0
+
+# sort rows and columns - adjacency matrix
+net_asst <- net_asst[sort(rownames(net_asst)), sort(colnames(net_asst))]
+
+# sort rows - attributes
+df <- df %>%  arrange(uid)
+
+# confirm network data and attribute data in the same order
+df$uid==rownames(network::as.sociomatrix(net_asst))
+```
+
+---
+
+## Friendship edgelists by wave
+
+Need to be same dimensions for matrix transformation (keeps isolates)
+```{r}
+# gen wave 1 edgelist 
+el1 <- df %>% 
+  mutate(wave = "2021") %>%
+  gather(key = "key", value = "alter", 
+         frd01.1:frd10.1)  
+
+# gen wave 2 edgelist 
+el2 <- df %>% 
+  mutate(wave = "2022") %>%
+  gather(key = "key", value = "alter", 
+         frd01.2:frd10.2)  
+```
+
+Gen edge attribute - frequency
+```{r}
+el1 <- el1 %>%
+  mutate(frequency = 
+           ifelse(key == "frd01.1", frd01_frq.1,
+           ifelse(key == "frd02.1", frd02_frq.1,
+           ifelse(key == "frd03.1", frd03_frq.1,
+           ifelse(key == "frd04.1", frd04_frq.1,
+           ifelse(key == "frd05.1", frd05_frq.1,
+           ifelse(key == "frd06.1", frd06_frq.1,
+           ifelse(key == "frd07.1", frd07_frq.1,
+           ifelse(key == "frd08.1", frd08_frq.1,
+           ifelse(key == "frd09.1", frd09_frq.1,
+           ifelse(key == "frd10.1", frd10_frq.1, NA)))))))))))
+
+el2 <- el2 %>%
+  mutate(frequency = 
+           ifelse(key == "frd01.2", frd01_frq.2,
+           ifelse(key == "frd02.2", frd02_frq.2,
+           ifelse(key == "frd03.2", frd03_frq.2,
+           ifelse(key == "frd04.2", frd04_frq.2,
+           ifelse(key == "frd05.2", frd05_frq.2,
+           ifelse(key == "frd06.2", frd06_frq.2,
+           ifelse(key == "frd07.2", frd07_frq.2,
+           ifelse(key == "frd08.2", frd08_frq.2,
+           ifelse(key == "frd09.2", frd09_frq.2,
+           ifelse(key == "frd10.2", frd10_frq.2, NA)))))))))))
+
+
+# convert frequency to numeric vector
+el1 <- el1 %>%
+  mutate(frequency = ifelse(frequency == "Daily", 4,
+                     ifelse(frequency == "A few times a week", 3,
+                     ifelse(frequency == "A few times a month", 2,
+                     ifelse(frequency == "Less than once a month", 1, NA)))))
+
+# convert frequency to numeric vector
+el2 <- el2 %>%
+  mutate(frequency = ifelse(frequency == "Daily", 4,
+                     ifelse(frequency == "A few times a week", 3,
+                     ifelse(frequency == "A few times a month", 2,
+                     ifelse(frequency == "Less than once a month", 1, NA)))))
+```
+
+Gen edge attribute - years known
+```{r}
+el1 <- el1 %>%
+  mutate(years = 
+           ifelse(key == "frd01.1", frd01_yrs.1,
+           ifelse(key == "frd02.1", frd02_yrs.1,
+           ifelse(key == "frd03.1", frd03_yrs.1,
+           ifelse(key == "frd04.1", frd04_yrs.1,
+           ifelse(key == "frd05.1", frd05_yrs.1,
+           ifelse(key == "frd06.1", frd06_yrs.1,
+           ifelse(key == "frd07.1", frd07_yrs.1,
+           ifelse(key == "frd08.1", frd08_yrs.1,
+           ifelse(key == "frd09.1", frd09_yrs.1,
+           ifelse(key == "frd10.1", frd10_yrs.1, NA)))))))))))
+
+el2 <- el2 %>%
+  mutate(years = 
+           ifelse(key == "frd01.2", frd01_yrs.2,
+           ifelse(key == "frd02.2", frd02_yrs.2,
+           ifelse(key == "frd03.2", frd03_yrs.2,
+           ifelse(key == "frd04.2", frd04_yrs.2,
+           ifelse(key == "frd05.2", frd05_yrs.2,
+           ifelse(key == "frd06.2", frd06_yrs.2,
+           ifelse(key == "frd07.2", frd07_yrs.2,
+           ifelse(key == "frd08.2", frd08_yrs.2,
+           ifelse(key == "frd09.2", frd09_yrs.2,
+           ifelse(key == "frd10.2", frd10_yrs.2, NA)))))))))))
+
+
+ # replace < 1 year with '0'
+el1 <- el1 %>%
+  mutate(years = ifelse(years == "< 1 year", 0, years))
+el2 <- el2 %>%
+  mutate(years = ifelse(years == "< 1 year", 0, years))
+
+# remove character 'years' and '<' sign from each value
+el1 <- el1 %>% 
+  mutate(years = str_replace_all(years, "[^[:alnum:]]", ""),
+         years = str_replace_all(years, "[[A-Za-z]]", ""))
+el2 <- el2 %>% 
+  mutate(years = str_replace_all(years, "[^[:alnum:]]", ""),
+         years = str_replace_all(years, "[[A-Za-z]]", ""))
+
+# convert to numeric var
+el1$years <- as.numeric(el1$years)
+el2$years <- as.numeric(el2$years)
+```
+
+Remove self-loops/duplicates and retain isolates
+```{r}
+# replace 55555, 88888, and 99999 w/ NA - wave 1
+el1 <- el1 %>%
+  mutate(alter = ifelse(alter == "88888", NA, alter),
+         alter = ifelse(alter == "99999", NA, alter),
+         alter = ifelse(alter == "55555", NA, alter))
+
+# replace 55555, 88888, and 99999 w/ NA - wave 2
+el2 <- el2 %>%
+  mutate(alter = ifelse(alter == "88888", NA, alter),
+         alter = ifelse(alter == "99999", NA, alter),
+         alter = ifelse(alter == "55555", NA, alter))
+
+# append wave 1 and wave 2 edgelists
+edge <- bind_rows(el1, el2)
+
+# gen indicator of out-degree to retain isolates
+edge <- edge %>% group_by(uid, wave) %>%
+  mutate(dego = n_distinct(alter, na.rm = T))
+
+# replace alter with uid for instances where degree == 0
+edge <- edge %>%
+  mutate(alter = replace(alter, dego == 0, uid))
+
+# remove rows where alter = NA
+edge <- edge %>% drop_na(alter)
+
+# remove duplicates - instances where ego nominated same alter more than once same wave
+edge <- edge %>%
+  group_by(uid, alter, wave) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+Filter edgelist to only include alters who responded to the survey in at least one wave (for some egos, none of their alters responded to the survey)
+```{r}
+# in el - identify if nomination responded to survey
+edge$ego_survey <- edge$uid   %in% df$uid  
+edge$alt_survey <- edge$alter %in% df$uid  
+
+# calculate dego not taking into account alt_survey == FALSE (e.g. instances where none of ego's alters responded to the survey)
+edge <- edge %>%
+  group_by(uid, wave) %>%
+  mutate(count_false = sum(alt_survey == "FALSE")) %>%
+  ungroup()
+
+# identify if none of ego's alters responded to the survey - to retain isolates
+edge <- edge %>%
+  mutate(alter_noresponse = ifelse(dego == count_false, 1, 0))
+
+# if none of ego's alters responded to the survey - replace alter w/ ego's uid
+edge <- edge %>%
+  mutate(alter = ifelse(alter_noresponse == 1, uid, alter))
+
+# in el - only retain nominations who responded to survey
+edge <- edge %>% 
+  filter(ego_survey == "TRUE") %>%
+  filter(alt_survey == "TRUE" | alter_noresponse == 1)
+
+# remove duplicates - instances where none of ego's alters responded to survey, and each alter replaced with uid
+edge <- edge %>%
+  group_by(uid, alter, wave) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+Gen edgelist for 2021 and 2022 using cleaned edge
+```{r}
+# gen edge1 and edge2 using cleaned edge
+edge1 <- edge %>% filter(wave == "2021") %>% select(uid, alter, years, frequency)
+edge2 <- edge %>% filter(wave == "2022") %>% select(uid, alter, years, frequency)
+```
+
+Identify structural zeros (officers who were not employed w/ XPD in wave 1) and officers who were missing (did not take survey in wave 1)
+```{r}
+# identify if uid (2022) only in 2022 data (not in wave 1 survey)
+link1 <- df21 %>% select(uid) %>% mutate(wave1 = 1)
+edge2 <- left_join(edge2, link1, by = c("uid"))
+
+# identify if uid (2022) only in 2022 data (not in wave 1 survey) - AND not employed by XPD in 2021
+df22 <- df22 %>% mutate(acad_yr = ifelse(acad_yr == "<1981", "1980", acad_yr))
+df22$acad_yr <- as.numeric(as.character(str_replace_all(df22$acad_yr, "[^[:alnum:]]", "")))
+status <- df22 %>% mutate(acad_yr = 2022 - acad_yr,
+                         acad_yr = ifelse(is.na(acad_yr), nyears, acad_yr)) %>%
+                  select(uid, acad_yr)
+edge2 <- left_join(edge2, status, by = c("uid"))
+edge2 <- edge2 %>% mutate(wave1 = ifelse(is.na(wave1) & acad_yr <=2, 10, wave1))  # 2 years as this accounts for people who started training at some point in 2020 and therefore were still in training and may not have gone into in-service training until the following year
+
+# retain relevant vars - these individuals were NA in wave 1 data
+wave21_NA <- edge2 %>% filter(is.na(wave1)) %>%
+  group_by(uid) %>%
+  slice(1)
+
+# retain relevant vars - these individuals were not employed in wave 1 data
+wave21_struct <- edge2 %>% filter(wave1 == 10) %>%
+  group_by(uid) %>%
+  slice(1)
+```
+
+Identify structural zeros (officers who were no longer employed w/ XPD in wave 2) and officers who were missing (did not take survey in wave 2)
+```{r}
+# identify if uid (2021) only in 2021 data (not in wave 2 survey)
+link2 <- df22 %>% select(uid) %>% mutate(wave2 = 1)
+edge1 <- left_join(edge1, link2, by = c("uid"))
+
+# read in employment status data - were they missing or were they not employed?
+status <- read.csv("data/ponet_xpd_2022_status1.csv")
+status$separation_date <- mdy(status$separation_date)
+status$separation_year <- year(status$separation_date)
+status <- status %>%
+  mutate(status1 = ifelse(separation_year >= "2022", 10, NA)) %>%
+  select(uid, status1)
+status$uid <- as.numeric(as.character(status$uid))
+edge1 <- left_join(edge1, status, by = c("uid"))
+edge1 <- edge1 %>% mutate(wave2 = ifelse(is.na(wave2) & status1 == 10, 10, wave2))
+
+
+# retain relevant vars - these individuals were NA in wave 2 data
+wave22_NA <- edge1 %>% filter(is.na(wave2)) %>%
+  group_by(uid) %>%
+  slice(1)
+
+# retain relevant vars - these individuals were not employed in wave 2 data
+wave22_struct <- edge1 %>% filter(wave2 == 10) %>%
+  group_by(uid) %>%
+  slice(1)
+```
+
+Convert edgelists to matrix for Rsiena
+```{r}
+# get unique list of ALL people in the edgelist (ego and alters) - should match
+node1 <- union(unique(edge1$uid), unique(edge1$alter)) 
+node2 <- union(unique(edge2$uid), unique(edge2$alter)) 
+
+# convert to igraph object
+g1 <- igraph::graph_from_data_frame(edge1, directed = TRUE)
+g2 <- igraph::graph_from_data_frame(edge2, directed = TRUE)
+
+# convert to directed matrix 
+net1 <- as.matrix(igraph::as_adjacency_matrix(g1))
+net2 <- as.matrix(igraph::as_adjacency_matrix(g2)) 
+
+# convert to directed matrix - years known
+yrs1 <- as.matrix(igraph::as_adjacency_matrix(g1, attr = "years"))
+yrs2 <- as.matrix(igraph::as_adjacency_matrix(g2, attr = "years"))
+
+# convert to directed matrix - frequency
+frq1 <- as.matrix(igraph::as_adjacency_matrix(g1, attr = "frequency"))
+frq2 <- as.matrix(igraph::as_adjacency_matrix(g2, attr = "frequency"))
+
+# convert diagonal matrix to zero (remove self-loops)
+diag(net1) <- 0
+diag(net2) <- 0
+diag(yrs1) <- 0
+diag(yrs2) <- 0
+diag(frq1) <- 0
+diag(frq2) <- 0
+
+# sort rows and columns - adjacency matrix
+net1 <- net1[sort(rownames(net1)), sort(colnames(net1))]
+net2 <- net2[sort(rownames(net2)), sort(colnames(net2))]
+yrs1 <- net1[sort(rownames(yrs1)), sort(colnames(yrs1))]
+yrs2 <- net2[sort(rownames(yrs2)), sort(colnames(yrs2))]
+frq1 <- net1[sort(rownames(frq1)), sort(colnames(frq1))]
+frq2 <- net2[sort(rownames(frq2)), sort(colnames(frq2))]
+
+# sort rows - attributes
+df <- df %>%  arrange(uid)
+
+# confirm network data and attribute data in the same order
+df$uid==rownames(network::as.sociomatrix(net1))
+df$uid==rownames(network::as.sociomatrix(net2))
+```
+
+
+Calculate jaccard index
+```{r}
+# Network change between subsequent observations:
+(tab1to2 <- table(net1, net2,useNA='always') )
+tab1to2[2,2] / (sum(tab1to2)-tab1to2[1,1])   # jaccard=.22
+```
+
+Assign structural zeros to matrix - wave 1
+```{r}
+table(wave21_struct$uid)
+struct21 <- c("1016",	"1022",	"1098",	"1116",	"1148",	"1169",	"1175",	"1183",	"1214",	"1267",	"1342",	"1382",	"1397",	"1437",	"1447",	"1455",	"1490",	"1514",	"1566",	"1571",	"1598",	"1608",	"1613",	"1633",	"1733",	"1738",	"1756",	"1782",	"1787",	"1790",	"1792",	"1794",	"1854",	"1855",	"1857",	"1907",	"1975",	"1980",	"1990",	"1999",	"2000",	"2016",	"2032",	"2034",	"2054",	"2055",	"2071",	"2106",	"2114",	"2117",	"2127",	"2147",	"2174",	"2195",	"2211",	"2231",	"2252",	"2274",	"2275",	"2294",	"2305",	"2314",	"2316",	"2374",	"2402",	"2412",	"2490",	"2504",	"2513",	"2540",	"2547",	"2596",	"2612",	"2650",	"2652",	"2671",	"2679",	"2699",	"2710",	"2720",	"2772",	"2774",	"2783",	"2794",	"2859",	"2867",	"2881",	"2889")
+
+# structural zeros for both sending and receiving ties
+net1[struct21, ] <- 10
+net1[, struct21] <- 10
+```
+
+Assign structural zeros to matrix - wave 2
+```{r}
+table(wave22_struct$uid)
+struct22 <- c("1040",	"1049",	"1050",	"1126",	"1132",	"1204",	"1208",	"1378",	"1503",	"1582",	"1583",	"1614",	"1626",	"1681",	"1825",	"1875",	"1924",	"1955",	"1971",	"2043",	"2053",	"2063",	"2098",	"2121",	"2155",	"2184",	"2334",	"2484",	"2563",	"2601",	"2625",	"2664",	"2681",	"2692",	"2702",	"2843",	"2845",	"2880",	"2890",	"2903")
+
+# structural zeros for both sending and receiving ties
+net2[struct22, ] <- 10
+net2[, struct22] <- 10
+```
+
+Assign NAs to matrix - wave 1 (n=216)
+```{r}
+NA21 <- c("1017",	"1032",	"1033",	"1047",	"1056",	"1071",	"1085",	"1093",	"1114",	"1133",	"1151",	"1156",	"1161",	"1172",	"1207",	"1209",	"1221",	"1223",	"1224",	"1231",	"1246",	"1250",	"1253",	"1262",	"1276",	"1277",	"1311",	"1315",	"1323",	"1329",	"1355",	"1362",	"1369",	"1375",	"1379",	"1402",	"1403",	"1404",	"1412",	"1414",	"1418",	"1431",	"1442",	"1453",	"1458",	"1464",	"1467",	"1476",	"1508",	"1511",	"1512",	"1516",	"1519",	"1520",	"1535",	"1540",	"1543",	"1562",	"1575",	"1586",	"1615",	"1617",	"1629",	"1632",	"1634",	"1635",	"1662",	"1667",	"1668",	"1669",	"1672",	"1684",	"1686",	"1690",	"1699",	"1701",	"1702",	"1719",	"1720",	"1727",	"1735",	"1740",	"1741",	"1750",	"1754",	"1759",	"1763",	"1800",	"1815",	"1829",	"1830",	"1836",	"1839",	"1849",	"1866",	"1882",	"1888",	"1909",	"1914",	"1927",	"1928",	"1931",	"1941",	"1946",	"1951",	"1953",	"1964",	"1967",	"1969",	"1989",	"1992",	"1995",	"2017",	"2027",	"2065",	"2067",	"2075",	"2076",	"2088",	"2097",	"2105",	"2128",	"2140",	"2154",	"2163",	"2165",	"2175",	"2178",	"2179",	"2194",	"2203",	"2206",	"2218",	"2220",	"2238",	"2247",	"2251",	"2260",	"2265",	"2273",	"2276",	"2284",	"2303",	"2317",	"2320",	"2325",	"2327",	"2330",	"2331",	"2346",	"2349",	"2365",	"2370",	"2399",	"2422",	"2441",	"2442",	"2461",	"2471",	"2482",	"2489",	"2495",	"2498",	"2499",	"2505",	"2528",	"2532",	"2543",	"2546",	"2550",	"2552",	"2553",	"2558",	"2561",	"2569",	"2571",	"2572",	"2595",	"2597",	"2603",	"2614",	"2637",	"2646",	"2648",	"2654",	"2659",	"2662",	"2667",	"2673",	"2676",	"2687",	"2694",	"2697",	"2713",	"2734",	"2742",	"2750",	"2759",	"2762",	"2771",	"2798",	"2822",	"2825",	"2832",	"2833",	"2836",	"2844",	"2852",	"2855",	"2857",	"2858",	"2866",	"2870",	"2897",	"2898",	"2914")
+
+# NAs for outgoing ties only
+net1[NA21, ] <- NA
+```
+
+Assign NAs to matrix - wave 2 (n=182)
+```{r}
+NA22 <- c("1007",	"1011",	"1018",	"1034",	"1051",	"1075",	"1080",	"1084",	"1092",	"1096",	"1103",	"1131",	"1139",	"1142",	"1180",	"1193",	"1194",	"1233",	"1251",	"1264",	"1297",	"1299",	"1309",	"1338",	"1381",	"1384",	"1387",	"1388",	"1401",	"1410",	"1417",	"1420",	"1422",	"1424",	"1432",	"1450",	"1451",	"1457",	"1463",	"1466",	"1471",	"1475",	"1485",	"1487",	"1496",	"1499",	"1517",	"1518",	"1526",	"1531",	"1538",	"1541",	"1542",	"1544",	"1546",	"1548",	"1553",	"1581",	"1587",	"1603",	"1616",	"1641",	"1646",	"1656",	"1670",	"1679",	"1685",	"1691",	"1696",	"1700",	"1705",	"1707",	"1711",	"1726",	"1729",	"1730",	"1746",	"1747",	"1766",	"1819",	"1821",	"1846",	"1853",	"1878",	"1879",	"1891",	"1902",	"1905",	"1929",	"1938",	"1948",	"1950",	"1958",	"1959",	"1974",	"1998",	"2015",	"2033",	"2036",	"2045",	"2048",	"2051",	"2113",	"2123",	"2158",	"2169",	"2187",	"2188",	"2193",	"2223",	"2224",	"2226",	"2242",	"2254",	"2255",	"2261",	"2282",	"2288",	"2295",	"2300",	"2302",	"2308",	"2309",	"2318",	"2324",	"2332",	"2344",	"2355",	"2357",	"2358",	"2379",	"2381",	"2401",	"2414",	"2416",	"2417",	"2443",	"2444",	"2447",	"2453",	"2492",	"2493",	"2514",	"2515",	"2519",	"2530",	"2541",	"2545",	"2582",	"2598",	"2631",	"2632",	"2636",	"2641",	"2642",	"2655",	"2668",	"2685",	"2701",	"2716",	"2717",	"2723",	"2725",	"2731",	"2732",	"2766",	"2768",	"2782",	"2804",	"2809",	"2812",	"2815",	"2819",	"2841",	"2853",	"2876",	"2886",	"2891",	"2896",	"2902",	"2909",	"2913")
+
+# NAs for outgoing ties only
+net2[NA22, ] <- NA
+```
+
+```{r}
+table(net1, net2)
+```
+---
+
+---
+
+## Save the datasets for Rsiena models
+```{r}
+save(net1,     file = "data/net1.RData")
+save(net2,     file = "data/net2.RData")
+save(frq1,     file = "data/frq1.Rdata")
+save(yrs1,     file = "data/yrs1.Rdata")
+save(net_acad, file = "data/net_acad.Rdata")
+save(net_asst, file = "data/net_asst.Rdata")
+save(df,       file = "data/df.RData")
+```
+
+---
+
+## Generate summary statistics for manuscript Table 1
+```{r}
+# load packages
+library(dplyr)
+library(tidyr)
+library(forcats)
+
+# build df summary
+df_summary <- df %>%                     # master data frame
+  select(
+    uid,
+    gun_qt.1,  gun_qt.2,
+    nops, nops2,
+    male.1, male.2,
+    race_whi.1, race_whi.2, race_blk.1, race_blk.2, race_oth.1, race_oth.2,
+    hisp.1,  hisp.2,
+    rank_po.1, rank_po.2,
+    acad_yr.1, acad_yr.2,
+    proactive.1, proactive.2,
+    street.1, street.2,
+    threat.1, threat.2,
+    taser.1,  taser.2
+  ) %>%
+  mutate(
+    # rename counts for symmetry
+    nops.1 = nops,
+    nops.2 = nops2
+  )
+
+# merge scaffold into wave‑specific frames & label quartile
+label_qt <- function(x) factor(x, levels = 1:5,
+                               labels = c("0 times", "1–2 times",
+                                          "3–4 times", "5–10 times", "11+ times"))
+
+df_summary21 <- df21 %>%
+  left_join(df_summary, by = "uid") %>%
+  mutate(gun_qt_cat.1 = label_qt(gun_qt.1))
+
+df_summary22 <- df22 %>%
+  left_join(df_summary, by = "uid") %>%
+  mutate(gun_qt_cat.2 = label_qt(gun_qt.2))
+
+# gen helper functions for creating summary statistics
+summarize_categorical <- function(df, var) {
+  valid_df <- df %>% filter(!is.na(.data[[var]]))
+  valid_n <- nrow(valid_df)
+  
+  valid_df %>%
+    count(value = .data[[var]], name = "n") %>%
+    mutate(
+      variable      = var,
+      category      = as.character(value),
+      percent_total = round(100 * n / nrow(df), 1),
+      percent_valid = round(100 * n / valid_n, 1)
+    ) %>%
+    select(variable, category, n, percent_total, percent_valid)
 }
+
+summarize_continuous <- function(df, var) {
+  nm <- df %>% filter(!is.na(.data[[var]]))
+  tibble(variable = var, category = "",
+         n = nrow(nm),
+         percent_total = NA, percent_valid = NA,
+         mean = round(mean(nm[[var]]), 2),
+         sd   = round(sd(nm[[var]]), 2),
+         min  = min(nm[[var]]),
+         max  = max(nm[[var]]))
+}
+
+build_summary <- function(df, wave_suffix) {
+  
+  # programmatic lists
+  base_cat <- c("gun_qt_cat", "male", "race_whi", "race_blk", "race_oth",
+                "hisp", "rank_po", "proactive", "street")
+  
+  base_con <- c("gun_qt", "acad_yr", "threat", "taser", "nops")
+  
+  cat_vars  <- paste0(base_cat, ".", wave_suffix)
+  cont_vars <- paste0(base_con, ".", wave_suffix)
+  
+  # summaries
+  cat_sum <- bind_rows(lapply(cat_vars,  summarize_categorical, df = df))
+  con_sum <- bind_rows(lapply(cont_vars, summarize_continuous,  df = df))
+  
+  miss <- tibble(
+    variable        = c(cat_vars, cont_vars),
+    missing_n       = sapply(df[c(cat_vars, cont_vars)],
+                             \(x) sum(is.na(x))),
+    missing_percent = round(100 * sapply(df[c(cat_vars, cont_vars)],
+                                         \(x) mean(is.na(x))), 1)
+  )
+  
+  bind_rows(cat_sum, con_sum) %>%
+    left_join(miss, by = "variable") %>%
+    select(variable, category, n, percent_total, percent_valid,
+           mean, sd, min, max, missing_n, missing_percent)
+}
+
+# gen summary stat tables for both waves
+final_summary_21 <- build_summary(df_summary21, 1) %>%
+  mutate(wave = "Wave 1 (2021)")
+
+final_summary_22 <- build_summary(df_summary22, 2) %>%
+  mutate(wave = "Wave 2 (2022)")
+
+# Print or export
+print(final_summary_21)
+print(final_summary_22)
+
+# optional long table
+summary_combined <- bind_rows(final_summary_21, final_summary_22)
+
+# write.csv
+write.csv(final_summary_21, "output/ponet_xpd_sumstats_21.csv")
+write.csv(final_summary_22, "output/ponet_xpd_sumstats_22.csv")
 ```
 
-\newpage
+## Generate network statistics for manuscript Table 2
 
-# Model specification
-
-## Model 1a - firearm-use (none = 0, draw = 1, discharge = 2) - avAlt
-gun.data.cat
+Calculate network statistics for each wave as presented in Table 2
 ```{r}
-# create a model specification object for the data
-myEffects1a <- getEffects(gun.data.cat)
-myEffects1a
+# extract relevant columns for edgelist
+edge_desc1 <- select(edge1, uid, alter)
+edge_desc2 <- select(edge2, uid, alter)
 
-# inspect all possible effects
-# write an html file to working directory
-effectsDocumentation(myEffects1a) 
+# create a node-level df with unique node IDs
 
-# test whether shared assignment and shared academy shape friendship
-myEffects1a <- includeEffects(myEffects1a, X, interaction1 = "asst", name = "frd")
-myEffects1a <- includeEffects(myEffects1a, X, interaction1 = "acad", name = "frd")
+# get unique uid
+nodes_from1 <- edge_desc1 %>%
+  distinct(uid) %>%
+  rename(node = uid)
+nodes_from2 <- edge_desc2 %>%
+  distinct(uid) %>%
+  rename(node = uid)
 
-# test for ego effects
-myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "gun",    name = "frd")
-myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "male",   name = "frd")
-myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "nyears", name = "frd")
-myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "po",     name = "frd")
-myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "whi",    name = "frd")
-myEffects1a <- includeEffects(myEffects1a, egoX, interaction1 = "blk",    name = "frd")
+# get unique alter
+nodes_to1 <- edge_desc1 %>%
+  distinct(alter) %>%
+  rename(node = alter)
+nodes_to2 <- edge_desc2 %>%
+  distinct(alter) %>%
+  rename(node = alter)
 
-# test for alter effects
-myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "gun",    name = "frd")
-myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "male",   name = "frd")
-myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "nyears", name = "frd")
-myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "po",     name = "frd")
-myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "whi",    name = "frd")
-myEffects1a <- includeEffects(myEffects1a, altX, interaction1 = "blk",    name = "frd")
+# Combine them, keeping only unique rows
+nodes_desc1 <- bind_rows(nodes_from1, nodes_to1) %>% distinct(node)
+nodes_desc2 <- bind_rows(nodes_from2, nodes_to2) %>% distinct(node)
 
-# test for homophily effects
-myEffects1a <- includeEffects(myEffects1a, simX, interaction1  = "gun",    name = "frd")
-myEffects1a <- includeEffects(myEffects1a, sameX, interaction1 = "male",   name = "frd")
-myEffects1a <- includeEffects(myEffects1a, simX, interaction1  = "nyears", name = "frd")
-myEffects1a <- includeEffects(myEffects1a, sameX, interaction1 = "po",     name = "frd")
-myEffects1a <- includeEffects(myEffects1a, sameX, interaction1 = "race",   name = "frd")
-
-# add structural effects as control variables
-myEffects1a <- includeEffects(myEffects1a, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-
-# behavioral effects - peer effects
-myEffects1a <- includeEffects(myEffects1a, avAlt, name = "gun", interaction1 = "frd")
-
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "male")
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "whi")
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "blk")
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "hisp")
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "nyears")
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "po")
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "pro")
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "street")
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "threat")
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "taser")
-myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "nops")
-
-# view full model specification
-myEffects1a
+# merge in wave attribute
+wave <- df %>% select(uid, wave.1, wave.2)
+nodes_desc1 <- left_join(nodes_desc1, wave, by = c("node" = "uid"))
+nodes_desc2 <- left_join(nodes_desc2, wave, by = c("node" = "uid"))
 ```
 
-## Model 1b - firearm-use (none = 0, draw = 1, discharge = 2) - avSim
-gun.data.cat
+Gen the directed igraph object
 ```{r}
-# create a model specification object for the data
-myEffects1b <- getEffects(gun.data.cat)
-myEffects1b
+# convert to igraph object
+g21 <- graph_from_data_frame(d = edge_desc1[, c("uid", "alter")], directed = T, vertices = nodes_desc1)
+g22 <- graph_from_data_frame(d = edge_desc2[, c("uid", "alter")], directed = T, vertices = nodes_desc2)
 
-# inspect all possible effects
-# write an html file to working directory
-effectsDocumentation(myEffects1b) 
+# using wave node attribute identify if node was in wave 1 or 2 survey
+v1_ids <- which(!is.na(V(g21)$wave.1) & V(g21)$wave.1 == "2021")
+v2_ids <- which(!is.na(V(g22)$wave.2) & V(g22)$wave.2 == "2022")
 
-# test whether shared assignment and shared academy shape friendship
-myEffects1b <- includeEffects(myEffects1b, X, interaction1 = "asst", name = "frd")
-myEffects1b <- includeEffects(myEffects1b, X, interaction1 = "acad", name = "frd")
+# induce subgraph on those nodes (includes all their edges)
+g21 <- induced_subgraph(g21, vids = v1_ids)
+g22 <- induced_subgraph(g22, vids = v2_ids)
 
-# test for ego effects
-myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "gun",    name = "frd")
-myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "male",   name = "frd")
-myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "nyears", name = "frd")
-myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "po",     name = "frd")
-myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "whi",    name = "frd")
-myEffects1b <- includeEffects(myEffects1b, egoX, interaction1 = "blk",    name = "frd")
-
-# test for alter effects
-myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "gun",    name = "frd")
-myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "male",   name = "frd")
-myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "nyears", name = "frd")
-myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "po",     name = "frd")
-myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "whi",    name = "frd")
-myEffects1b <- includeEffects(myEffects1b, altX, interaction1 = "blk",    name = "frd")
-
-# test for homophily effects
-myEffects1b <- includeEffects(myEffects1b, simX, interaction1  = "gun",    name = "frd")
-myEffects1b <- includeEffects(myEffects1b, sameX, interaction1 = "male",   name = "frd")
-myEffects1b <- includeEffects(myEffects1b, simX, interaction1  = "nyears", name = "frd")
-myEffects1b <- includeEffects(myEffects1b, sameX, interaction1 = "po",     name = "frd")
-myEffects1b <- includeEffects(myEffects1b, sameX, interaction1 = "race",   name = "frd")
-
-# add structural effects as control variables
-myEffects1b <- includeEffects(myEffects1b, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-
-# behavioral effects - peer effects
-myEffects1b <- includeEffects(myEffects1b, avSim, name = "gun", interaction1 = "frd")
-
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "male")
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "whi")
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "blk")
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "hisp")
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "nyears")
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "po")
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "pro")
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "street")
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "threat")
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "taser")
-myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "nops")
-
-# view full model specification
-myEffects1b
+# simplify to remove self-loops and multiple edges
+g21 <- simplify(g21, remove.multiple = TRUE, remove.loops = TRUE)
+g22 <- simplify(g22, remove.multiple = TRUE, remove.loops = TRUE)
 ```
 
-## Model 2a - firearm-use (1-10+ draw + discharge) - avAlt
-gun.data.10
+Calculate network measures (each wave separately)
 ```{r}
-# create a model specification object for the data
-myEffects2a <- getEffects(gun.data.10)
-myEffects2a
+# Calculate network statistics - 2021
+clu <- igraph::components(g21)
+biggest_cluster <- which.max(clu$csize)
+node_ids <- V(g21)[clu$membership == biggest_cluster]
+lcc21 <- igraph::induced_subgraph(g21, node_ids)                 # gen lcc
 
-# inspect all possible effects
-# write an html file to working directory
-effectsDocumentation(myEffects2a) 
+degin21   = igraph::degree(g21, mode = "in")                     # in degree centrality for all nodes in the network
+degot21   = igraph::degree(g21, mode = "out")                    # out degree centrality for all nodes in the network
 
-# test whether shared assignment and shared academy shape friendship
-myEffects2a <- includeEffects(myEffects2a, X, interaction1 = "asst", name = "frd")
-myEffects2a <- includeEffects(myEffects2a, X, interaction1 = "acad", name = "frd")
+V(g21)$degt21 <- igraph::degree(g21, mode = "total")             # calculate number of isolates in 2021
+table(V(g21)$degt21)
 
-# test for ego effects
-myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "gun",    name = "frd")
-myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "male",   name = "frd")
-myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "nyears", name = "frd")
-myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "po",     name = "frd")
-myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "whi",    name = "frd")
-myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "blk",    name = "frd")
+network_metrics21 <- cbind(
+  nodes     = vcount(g21),                                        # count the number of nodes
+  edges     = ecount(g21),                                        # count the number of edges
+  density   = edge_density(g21),                                  # calculate the network's density
+  cc        = transitivity(g21, "global"),                        # calculate the network's clustering coefficient
+  recip     = reciprocity(g21),                                   # calculate the extent to which ties in the network are reciprocated
+  centr_deg = centr_degree(g21, mode = "all")$centralization,     # calculate the network's degree centralization
+  lcc       = vcount(lcc21),
+  meandegin = mean(degin21),
+  mindegin  = min(degin21),
+  maxdegin  = max(degin21),
+  meandegot = mean(degot21),
+  mindegot  = min(degot21),
+  maxdegot  = max(degot21)
+)
 
-# test for alter effects
-myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "gun",    name = "frd")
-myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "male",   name = "frd")
-myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "nyears", name = "frd")
-myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "po",     name = "frd")
-myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "whi",    name = "frd")
-myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "blk",    name = "frd")
+# convert network metrics object to a dataframe
+network_metrics21 <- as.data.frame(t(network_metrics21))
 
-# test for homophily effects
-myEffects2a <- includeEffects(myEffects2a, simX, interaction1  = "gun",    name = "frd")
-myEffects2a <- includeEffects(myEffects2a, sameX, interaction1 = "male",   name = "frd")
-myEffects2a <- includeEffects(myEffects2a, simX, interaction1  = "nyears", name = "frd")
-myEffects2a <- includeEffects(myEffects2a, sameX, interaction1 = "po",     name = "frd")
-myEffects2a <- includeEffects(myEffects2a, sameX, interaction1 = "race",   name = "frd")
-
-# add structural effects as control variables
-myEffects2a <- includeEffects(myEffects2a, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-
-# behavioral effects - peer effects
-myEffects2a <- includeEffects(myEffects2a, avAlt, name = "gun", interaction1 = "frd")
-
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "male")
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "whi")
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "blk")
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "hisp")
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "nyears")
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "po")
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "pro")
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "street")
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "threat")
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "taser")
-myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "nops")
-
-# view full model specification
-myEffects2a
+# take a peak at the network statistics
+options(scipen=999)
+network_metrics21
 ```
 
-## Model 2b - firearm-use (1-10+ draw + discharge) - avSim
-gun.data.10
+Calculate network statistics - 2022
 ```{r}
-# create a model specification object for the data
-myEffects2b <- getEffects(gun.data.10)
-myEffects2b
+clu <- igraph::components(g22)
+biggest_cluster <- which.max(clu$csize)
+node_ids <- V(g22)[clu$membership == biggest_cluster]
+lcc22 <- igraph::induced_subgraph(g22, node_ids)                  # gen lcc
 
-# inspect all possible effects
-# write an html file to working directory
-effectsDocumentation(myEffects2b) 
+degin22   = igraph::degree(g22, mode = "in")                      # in degree centrality for all nodes in the network
+degot22   = igraph::degree(g22, mode = "out")                     # out degree centrality for all nodes in the network
 
-# test whether shared assignment and shared academy shape friendship
-myEffects2b <- includeEffects(myEffects2b, X, interaction1 = "asst", name = "frd")
-myEffects2b <- includeEffects(myEffects2b, X, interaction1 = "acad", name = "frd")
+V(g22)$degt22 <- igraph::degree(g22, mode = "total")             # calculate number of isolates in 2022
+table(V(g22)$degt22)
 
-# test for ego effects
-myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "gun",    name = "frd")
-myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "male",   name = "frd")
-myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "nyears", name = "frd")
-myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "po",     name = "frd")
-myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "whi",    name = "frd")
-myEffects2b <- includeEffects(myEffects2b, egoX, interaction1 = "blk",    name = "frd")
+network_metrics22 <- cbind(
+  nodes     = vcount(g22),                                        # count the number of nodes
+  edges     = ecount(g22),                                        # count the number of edges
+  density   = edge_density(g22),                                  # calculate the network's density
+  cc        = transitivity(g22, "global"),                        # calculate the network's clustering coefficient
+  recip     = reciprocity(g22),                                   # calculate the extent to which ties in the network are reciprocated
+  centr_deg = centr_degree(g22, mode = "all")$centralization,     # calculate the network's degree centralization
+  lcc       = vcount(lcc22),
+  meandegin = mean(degin22),
+  mindegin  = min(degin22),
+  maxdegin  = max(degin22),
+  meandegot = mean(degot22),
+  mindegot  = min(degot22),
+  maxdegot  = max(degot22)
+)
 
-# test for alter effects
-myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "gun",    name = "frd")
-myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "male",   name = "frd")
-myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "nyears", name = "frd")
-myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "po",     name = "frd")
-myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "whi",    name = "frd")
-myEffects2b <- includeEffects(myEffects2b, altX, interaction1 = "blk",    name = "frd")
+# convert network metrics object to a dataframe
+network_metrics22 <- as.data.frame(t(network_metrics22))
 
-# test for homophily effects
-myEffects2b <- includeEffects(myEffects2b, simX, interaction1  = "gun",    name = "frd")
-myEffects2b <- includeEffects(myEffects2b, sameX, interaction1 = "male",   name = "frd")
-myEffects2b <- includeEffects(myEffects2b, simX, interaction1  = "nyears", name = "frd")
-myEffects2b <- includeEffects(myEffects2b, sameX, interaction1 = "po",     name = "frd")
-myEffects2b <- includeEffects(myEffects2b, sameX, interaction1 = "race",   name = "frd")
-
-# add structural effects as control variables
-myEffects2b <- includeEffects(myEffects2b, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-
-# behavioral effects - peer effects
-myEffects2b <- includeEffects(myEffects2b, avSim, name = "gun", interaction1 = "frd")
-
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "male")
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "whi")
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "blk")
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "hisp")
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "nyears")
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "po")
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "pro")
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "street")
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "threat")
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "taser")
-myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "nops")
-
-# view full model specification
-myEffects2b
+# take a peak at the network statistics
+network_metrics22
 ```
 
-## Model 3a - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avAlt
-gun.data.qt
+Bind the network metrics
 ```{r}
-# create a model specification object for the data
-myEffects3a <- getEffects(gun.data.qt)
-myEffects3a
+network_metrics21 <- network_metrics21 %>% rename("2021" = "V1")
+network_metrics22 <- network_metrics22 %>% rename("2022" = "V1")
 
-# inspect all possible effects
-# write an html file to working directory
-effectsDocumentation(myEffects3a) 
+network_metrics <- cbind(
+  network_metrics21,
+  network_metrics22
+)
 
-# test whether shared assignment and shared academy shape friendship
-myEffects3a <- includeEffects(myEffects3a, X, interaction1 = "asst", name = "frd")
-myEffects3a <- includeEffects(myEffects3a, X, interaction1 = "acad", name = "frd")
+network_metrics
 
-# test for ego effects
-myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "gun",    name = "frd")
-myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "male",   name = "frd")
-myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "nyears", name = "frd")
-myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "po",     name = "frd")
-myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "whi",    name = "frd")
-myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "blk",    name = "frd")
-
-# test for alter effects
-myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "gun",    name = "frd")
-myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "male",   name = "frd")
-myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "nyears", name = "frd")
-myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "po",     name = "frd")
-myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "whi",    name = "frd")
-myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "blk",    name = "frd")
-
-# test for homophily effects
-myEffects3a <- includeEffects(myEffects3a, simX, interaction1  = "gun",    name = "frd")
-myEffects3a <- includeEffects(myEffects3a, sameX, interaction1 = "male",   name = "frd")
-myEffects3a <- includeEffects(myEffects3a, simX, interaction1  = "nyears", name = "frd")
-myEffects3a <- includeEffects(myEffects3a, sameX, interaction1 = "po",     name = "frd")
-myEffects3a <- includeEffects(myEffects3a, sameX, interaction1 = "race",   name = "frd")
-
-# add structural effects as control variables
-myEffects3a <- includeEffects(myEffects3a, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-
-# behavioral effects - peer effects
-myEffects3a <- includeEffects(myEffects3a, avAlt, name = "gun", interaction1 = "frd")
-
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "male")
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "whi")
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "blk")
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "hisp")
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "nyears")
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "po")
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "pro")
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "street")
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "threat")
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "taser")
-myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "nops")
-
-# view full model specification
-myEffects3a
+# export network statistics as csv file
+write.csv(network_metrics, "output/ponet_xpd_netstats.csv")
 ```
 
-## Model 3b - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avSim
-gun.data.qt
+---
+
+## Generate summary statistics comparing officers in one wave versus both waves Table C 
+
+Officers participating in both survey waves compared with one-wave participants Table C.
 ```{r}
-# create a model specification object for the data
-myEffects3b <- getEffects(gun.data.qt)
-myEffects3b
+# load broom package
+library(broom)
 
-# inspect all possible effects
-# write an html file to working directory
-effectsDocumentation(myEffects3b) 
+# identify outdegree (replace 55555, 77777, 88888, and 99999 w/ NA)
+df <- df %>%
+  mutate(across(matches("^frd(0[1-9]|10)\\.(1|2)$"), 
+                ~ ifelse(. %in% c("55555", "77777", "88888", "99999"), NA, .)))
 
-# test whether shared assignment and shared academy shape friendship
-myEffects3b <- includeEffects(myEffects3b, X, interaction1 = "asst", name = "frd")
-myEffects3b <- includeEffects(myEffects3b, X, interaction1 = "acad", name = "frd")
+df <- df %>%
+    mutate(dego.1 = rowSums(!is.na(select(., frd01.1:frd10.1))),
+           dego.2 = rowSums(!is.na(select(., frd01.2:frd10.2))))
 
-# test for ego effects
-myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "gun",    name = "frd")
-myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "male",   name = "frd")
-myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "nyears", name = "frd")
-myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "po",     name = "frd")
-myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "whi",    name = "frd")
-myEffects3b <- includeEffects(myEffects3b, egoX, interaction1 = "blk",    name = "frd")
+# Define groups: "Both Waves" vs "One Wave"
+df <- df %>% 
+  mutate(group = ifelse(!is.na(wave.1) & !is.na(wave.2), "Both Waves", "One Wave"))
 
-# test for alter effects
-myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "gun",    name = "frd")
-myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "male",   name = "frd")
-myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "nyears", name = "frd")
-myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "po",     name = "frd")
-myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "whi",    name = "frd")
-myEffects3b <- includeEffects(myEffects3b, altX, interaction1 = "blk",    name = "frd")
+# transform gun_qt into dummy vars for descriptive statistics
+df <- df %>%
+  mutate(gun_qt_cat1.1 = ifelse(gun_qt.1 == 1, 1, 0),
+         gun_qt_cat2.1 = ifelse(gun_qt.1 == 2, 1, 0),
+         gun_qt_cat3.1 = ifelse(gun_qt.1 == 3, 1, 0),
+         gun_qt_cat4.1 = ifelse(gun_qt.1 == 4, 1, 0),
+         gun_qt_cat5.1 = ifelse(gun_qt.1 == 5, 1, 0),
+         gun_qt_cat1.2 = ifelse(gun_qt.2 == 1, 1, 0),
+         gun_qt_cat2.2 = ifelse(gun_qt.2 == 2, 1, 0),
+         gun_qt_cat3.2 = ifelse(gun_qt.2 == 3, 1, 0),
+         gun_qt_cat4.2 = ifelse(gun_qt.2 == 4, 1, 0),
+         gun_qt_cat5.2 = ifelse(gun_qt.2 == 5, 1, 0),
+         )
 
-# test for homophily effects
-myEffects3b <- includeEffects(myEffects3b, simX, interaction1  = "gun",    name = "frd")
-myEffects3b <- includeEffects(myEffects3b, sameX, interaction1 = "male",   name = "frd")
-myEffects3b <- includeEffects(myEffects3b, simX, interaction1  = "nyears", name = "frd")
-myEffects3b <- includeEffects(myEffects3b, sameX, interaction1 = "po",     name = "frd")
-myEffects3b <- includeEffects(myEffects3b, sameX, interaction1 = "race",   name = "frd")
+# create 3 category race variable (Blk, White and Other)
+df <- df %>% 
+  mutate(race3.1 = ifelse(race_blk.1 == 1, 1,
+                          ifelse(race_whi.1 == 1, 2,
+                                 ifelse(race_oth.1 == 1, 3, NA))))
 
-# add structural effects as control variables
-myEffects3b <- includeEffects(myEffects3b, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
+# Use the psych::describeBy() function to get summary statistics for age and income by group
+summary <- describeBy(df[, c("gun_qt_cat1.1", "gun_qt_cat2.1", "gun_qt_cat3.1", "gun_qt_cat4.1", "gun_qt_cat5.1",
+                             "gun_qt_cat1.2", "gun_qt_cat2.2", "gun_qt_cat3.2", "gun_qt_cat4.2", "gun_qt_cat5.2",
+                             "male.1", "race_whi.1", "race_blk.1", "race_oth.1", "hisp.1", "acad_yr.1", "rank_po.1",
+                             "proactive.1", "street.1", "threat.1", "taser.1", "nops1", "dego.1", "dego.2")], group = df$group, mat = TRUE)
 
-# behavioral effects - peer effects
-myEffects3b <- includeEffects(myEffects3b, avSim, name = "gun", interaction1 = "frd")
+# Select only relevant columns (mean and standard deviation)
+summary <- summary %>%
+  select(group1, mean, sd)
 
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "male")
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "whi")
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "blk")
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "hisp")
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "nyears")
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "po")
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "pro")
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "street")
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "threat")
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "taser")
-myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "nops")
+summary <- rownames_to_column(summary, var = "Variable")
 
-# view full model specification
-myEffects3b
+# pivot
+final_s <- summary %>%
+  pivot_wider(names_from = group1, values_from = c(mean, sd), names_sep = "_") %>%
+  arrange(Variable)
+
+
+# Perform ANOVA for the continuous variables
+anova_acadyr <- aov(acad_yr.1 ~ group, data = df)
+anova_threat <- aov(threat.1  ~ group, data = df)
+anova_taser  <- aov(taser.1   ~ group, data = df)
+anova_nops   <- aov(nops1     ~ group, data = df)
+anova_dego1  <- aov(dego.1    ~ group, data = df)
+anova_dego2  <- aov(dego.2    ~ group, data = df)
+
+# Chi-squared test for the categorical variables
+chi_gun1     <- chisq.test(table(df$gun_qt.1,    df$group))
+chi_gun2     <- chisq.test(table(df$gun_qt.2,    df$group))
+chi_male     <- chisq.test(table(df$male.1,      df$group))
+chi_whi      <- chisq.test(table(df$race_whi.1,  df$group))
+chi_blk      <- chisq.test(table(df$race_blk.1,  df$group))
+chi_oth      <- chisq.test(table(df$race_oth.1,  df$group))
+chi_race     <- chisq.test(table(df$race3.1,     df$group))
+chi_hisp     <- chisq.test(table(df$hisp.1,      df$group))
+chi_rankpo   <- chisq.test(table(df$rank_po.1,   df$group))
+chi_pro      <- chisq.test(table(df$proactive.1, df$group))
+chi_street   <- chisq.test(table(df$street.1,    df$group))
+
+chi_gun1$p.value
+chi_gun2$p.value
+tidy(anova_dego1)$p.value[1]
+tidy(anova_dego2)$p.value[1]
+chi_male$p.value
+chi_race$p.value
+chi_hisp$p.value
+tidy(anova_acadyr)$p.value[1]
+chi_rankpo$p.value
+chi_pro$p.value
+chi_street$p.value
+tidy(anova_threat)$p.value[1]
+tidy(anova_taser)$p.value[1]
+tidy(anova_nops)$p.value[1]
 ```
 
-\newpage
 
-# Model estimation
 
-## Model 1a - firearm-use (none = 0, draw = 1, discharge = 2) - avAlt
-```{r, eval = FALSE}
-# create an object with settings to tune the estimation algorithm:
-modelOptions1a <- sienaAlgorithmCreate(
-	projname ='gun.data.cat', MaxDegree = c(frd = 10),  
-	doubleAveraging = 0, diagonalize = .2)  
-
-# estimate the model
-myResults1a <- siena07(modelOptions1a, data = gun.data.cat,
-	effects = myEffects1a, batch = FALSE, verbose = FALSE, returnDeps = TRUE
-    ) 
-
-# report the results
-myResults1a         
-
-# examine results
-outTable(myResults1a)
-
-# assign final estimates to myres
-model1a <- myResults1a
-
-# obtain results in html format
-xtable(myResults1a, file="model1a.htm", type="html", digits = 3)
-```
-
-GOF Model 1a 
-```{r, eval = FALSE}
-# indegree - gof
-( gof.id.1a <- sienaGOF(myResults1a, verbose=TRUE, varName="frd", IndegreeDistribution,
-     join=T, cumulative=F) )
-jpeg(file = "output/gofid1a.jpeg")
-plot(gof.id.1a)
-dev.off()
-
-# outdegree - gof
-( gof.od.1a <- sienaGOF(myResults1a, verbose=TRUE, varName="frd", OutdegreeDistribution,
-     join=T, cumulative=F) )
-jpeg(file = "output/gofod1a.jpeg")
-plot(gof.od.1a)
-dev.off()
-
-# triad census - gof
-( gof.tc.1a <- sienaGOF(myResults1a, verbose=TRUE, varName="frd", TriadCensus,
-     join=T, levls=0:10) )
-jpeg(file = "output/goftc1a.jpeg")
-plot(gof.tc.1a)
-dev.off()
-
-# overall behavior distribution - gof
-( gof.behaviour.1a <- sienaGOF(myResults1a, BehaviorDistribution,
-	verbose=TRUE,join=TRUE,varName="gun") )
-jpeg(file = "output/gofbehaviour1a.jpeg")
-plot(gof.behaviour.1a)
-dev.off()
-```
-
-## Model 1b - firearm-use (none = 0, draw = 1, discharge = 2) - avSim
-```{r, eval = FALSE}
-# Create an object with settings to tune the estimation algorithm:
-modelOptions1b <- sienaAlgorithmCreate(
-	projname ='gun.data.cat', MaxDegree = c(frd = 10),  
-	doubleAveraging = 0, diagonalize = .2)  
-
-# estimate the model
-myResults1b <- siena07(modelOptions1b, data = gun.data.cat,
-	effects = myEffects1b, batch = FALSE, verbose = FALSE, returnDeps = TRUE
-    )  
-
-# report the results
-myResults1b 
-
-# examine results
-outTable(myResults1b)
-
-# assign final estimates to myres
-model1b <- myResults1b
-
-# obtain results in html format
-xtable(myResults1b, file="model1b.htm", type="html", digits = 3)
-```
-
-GOF Model 1b 
-```{r, eval = FALSE}
-# indegree - gof
-( gof.id.1b <- sienaGOF(myResults1b, verbose=TRUE, varName="frd", IndegreeDistribution,
-     join=T, cumulative=F) )
-jpeg(file = "output/gofid1b.jpeg")
-plot(gof.id.1b)
-dev.off()
-
-# outdegree - gof
-( gof.od.1b <- sienaGOF(myResults1b, verbose=TRUE, varName="frd", OutdegreeDistribution,
-     join=T, cumulative=F) )
-jpeg(file = "output/gofod1b.jpeg")
-plot(gof.od.1b)
-dev.off()
-
-# triad census - gof
-( gof.tc.1b <- sienaGOF(myResults1b, verbose=TRUE, varName="frd", TriadCensus,
-     join=T, levls=0:10) )
-jpeg(file = "output/goftc1b.jpeg")
-plot(gof.tc.1b)
-dev.off()
-
-# overall behavior distribution - gof
-( gof.behaviour.1b <- sienaGOF(myResults1b, BehaviorDistribution,
-	verbose=TRUE,join=TRUE,varName="gun") )
-jpeg(file = "output/gofbehaviour1b.jpeg")
-plot(gof.behaviour.1b)
-dev.off()
-```
-
-## Model 2a - firearm-use (1-10+ draw + discharge) - avAlt 
-gun.data.10 Does not converge
-```{r, eval = FALSE}
-# Create an object with settings to tune the estimation algorithm:
-# modelOptions2a <- sienaAlgorithmCreate(
-#	projname ='gun.data.10', MaxDegree = c(frd = 10),  
-#	doubleAveraging = 0, diagonalize = .2)  
-
-
-# Estimate the model
-# myResults2a <- siena07(modelOptions2a, data = gun.data.10,
-#	effects = myEffects2a, batch = FALSE, verbose = FALSE, returnDeps = TRUE
-#    )    # if multiple processors desired, comment out this line and run the next
-# , initC=T, useCluster=TRUE, nbrNodes=3) # replace "3" with your number of processors-1
-
-# report the results
-#myResults2a 
-
-# examine fuller report of results (shows score tests)
-# summary(myResults2a)
-
-# examine results
-#outTable(myResults2a)
-
-# assign final estimates to myres
-#model2a <- myResults2a
-
-# obtain results in html format
-#xtable(myResults2a, file="model2a.htm", type="html", digits = 3)
-```
-
-GOF Model 2a 
-```{r, eval = FALSE}
-# indegree - gof
-#( gof.id.2a <- sienaGOF(myResults2a, verbose=TRUE, varName="frd", IndegreeDistribution,
-#     join=T, cumulative=F) )
-#jpeg(file = "output/gofid2a.jpeg")
-#plot(gof.id.2a)
-#dev.off()
-
-# outdegree - gof
-#( gof.od.2a <- sienaGOF(myResults2a, verbose=TRUE, varName="frd", OutdegreeDistribution,
-#     join=T, cumulative=F) )
-#jpeg(file = "output/gofod2a.jpeg")
-#plot(gof.od.2a)
-#dev.off()
-
-# triad census - gof
-#( gof.tc.2a <- sienaGOF(myResults2a, verbose=TRUE, varName="frd", TriadCensus,
-#     join=T, levls=0:10) )
-#jpeg(file = "output/goftc2a.jpeg")
-#plot(gof.tc.2a)
-#dev.off()
-
-# goodness of fit overall behavior distribution
-#( gof.behaviour.2a <- sienaGOF(myResults2a, BehaviorDistribution,
-#	verbose=TRUE,join=TRUE,varName="gun") )
-#jpeg(file = "output/gofbehaviour2a.jpeg")
-#plot(gof.behaviour.2a)
-#dev.off()
-```
-
-## Model 2b - firearm-use (1-10+ draw + discharge) - avSim
-gun.data.10 Does not converge
-```{r, eval = FALSE}
-# Create an object with settings to tune the estimation algorithm:
-#modelOptions2b <- sienaAlgorithmCreate(
-#	projname ='gun.data.10', MaxDegree = c(frd = 10),  
-#	doubleAveraging = 0, diagonalize = .2)  
-
-# Estimate the model
-#myResults2b <- siena07(modelOptions2b, data = gun.data.10,
-#	effects = myEffects2b, batch = FALSE, verbose = FALSE, returnDeps = TRUE
-#    )    # if multiple processors desired, comment out this line and run the next
-# , initC=T, useCluster=TRUE, nbrNodes=3) # replace "3" with your number of processors-1
-
-# report results
-#myResults2b 
-
-# examine fuller report of results (shows score tests)
-# summary(myResults2b)
-
-# examine results
-#outTable(myResults2b)
-
-# assign final estimates to myres
-#model1 <- myResults2b
-
-# obtain results in html format
-#xtable(myResults2b, file="model2b.htm", type="html", digits = 3)
-```
-
-GOF Model 2b 
-```{r, eval = FALSE}
-# indegree - gof
-#( gof.id.2b <- sienaGOF(myResults2b, verbose=TRUE, varName="frd", IndegreeDistribution,
-#     join=T, cumulative=F) )
-#jpeg(file = "output/gofid2b.jpeg")
-#plot(gof.id.2b)
-#dev.off()
-
-# outdegree - gof
-#( gof.od.2b <- sienaGOF(myResults2b, verbose=TRUE, varName="frd", OutdegreeDistribution,
-#     join=T, cumulative=F) )
-#jpeg(file = "output/gofod2b.jpeg")
-#plot(gof.od.2b)
-#dev.off()
-
-# triad census - gof
-#( gof.tc.2b <- sienaGOF(myResults2b, verbose=TRUE, varName="frd", TriadCensus,
-#     join=T, levls=0:10) )
-#jpeg(file = "output/goftc2b.jpeg")
-#plot(gof.tc.2b)
-#dev.off()
-
-# overall behavior distribution - gof
-#( gof.behaviour.2b <- sienaGOF(myResults2b, BehaviorDistribution,
-#	verbose=TRUE,join=TRUE,varName="gun") )
-#jpeg(file = "output/gofbehaviour2b.jpeg")
-#plot(gof.behaviour.2b)
-#dev.off()
-```
-
-## Model 3a - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avAlt
-```{r, eval = FALSE}
-# create an object with settings to tune the estimation algorithm:
-modelOptions3a <- sienaAlgorithmCreate(
-	projname ='gun.data.qt', MaxDegree = c(frd = 10),  
-	doubleAveraging = 0, diagonalize = .2)  
-
-# estimate the model
-myResults3a <- siena07(modelOptions3a, data = gun.data.qt,
-	effects = myEffects3a, batch = FALSE, verbose = FALSE, returnDeps = TRUE
-    ) 
-
-# report results
-myResults3a 
-
-# examine results
-outTable(myResults3a)
-
-# assign final estimates to myres
-model3a <- myResults3a
-
-# obtain results in html format
-xtable(myResults3a, file="model3a.htm", type="html", digits = 3)
-# xtable(myAttempt2_3a, file="model3a_2.htm", type="html", digits = 3)
-```
-
-GOF Model 3a 
-```{r, eval = FALSE}
-# indegree - gof
-( gof.id.3a <- sienaGOF(myResults3a, verbose=TRUE, varName="frd", IndegreeDistribution,
-     join=T, cumulative=F) )
-jpeg(file = "output/gofid3a.jpeg")
-plot(gof.id.3a)
-dev.off()
-
-# outdegree - gof
-( gof.od.3a <- sienaGOF(myResults3a, verbose=TRUE, varName="frd", OutdegreeDistribution,
-     join=T, cumulative=F) )
-jpeg(file = "output/gofod3a.jpeg")
-plot(gof.od.3a)
-dev.off()
-
-# triad census - gof
-( gof.tc.3a <- sienaGOF(myResults3a, verbose=TRUE, varName="frd", TriadCensus,
-     join=T, levls=0:10) )
-jpeg(file = "output/goftc3a.jpeg")
-plot(gof.tc.3a)
-dev.off()
-
-# overall behavior distribution - gof
-( gof.behaviour.3a <- sienaGOF(myResults3a, BehaviorDistribution,
-	verbose=TRUE,join=TRUE,varName="gun") )
-jpeg(file = "output/gofbehaviour3a.jpeg")
-plot(gof.behaviour.3a)
-dev.off()
-```
-
-## Model 3b - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avSim
-```{r, eval = FALSE}
-# create an object with settings to tune the estimation algorithm:
-modelOptions3b <- sienaAlgorithmCreate(
-	projname ='gun.data.qt', MaxDegree = c(frd = 10),  
-	doubleAveraging = 0, diagonalize = .2) 
-
-# estimate the model
-myResults3b <- siena07(modelOptions3b, data = gun.data.qt,
-	effects = myEffects3b, batch = FALSE, verbose = FALSE, returnDeps = TRUE
-    )  
-
-# report the results
-myResults3b    
-# diagnostic checks
-# If 'Overall maximum convergence ratio' is greater than .25 rerun the model
-# and use previous estimates as starting values (prevAns option)
-# myAttempt2_3b <- siena07(modelOptions3b, data = gun.data.qt, effects = myEffects3b, prevAns = myResults3b, returnDeps = TRUE)
-# To identify troublesome effects, look for high 'Convergence t-ratios' (>.3b) 
-
-# gen algorithm to improve model fit
- m3b_algo <- sienaAlgorithmCreate(projname = 'm3b_algo',diagonalize = 0.4, doubleAveraging = 0, n3=10000)
-# (ans <- siena07(m3b_algo, data = gun.data.qt, effects = myEffects3b, prevAns = myResults3b))
-myAttempt3_3b <- siena07(m3b_algo, data=gun.data.qt, effects=myEffects3b, prevAns= myResults3b, batch=FALSE, returnDeps = TRUE)
-
-# examine fuller report of results (shows score tests)
-# summary(myResults3b)
-# summary(myAttempt2_3b)
-
-# examine results
-outTable(myResults3b)
-# outTable(myAttempt2_3b)
-outTable(myAttempt3_3b)
-
-# assign final estimates to myres
-model3b <- myResults3b
-
-# obtain results in html format
-xtable(myResults3b, file="model3b.htm", type="html", digits = 3)
-xtable(myAttempt2_3b, file="model3b_2.htm", type="html", digits = 3)
-xtable(myAttempt3_3b, file="model3b_3.htm", type="html", digits = 3)
-```
-
-GOF Model 3b 
-```{r, eval = FALSE}
-# indegree - gof
-( gof.id.3b <- sienaGOF(myAttempt3_3b, verbose=TRUE, varName="frd", IndegreeDistribution,
-     join=T, cumulative=F) )
-jpeg(file = "output/gofid3b_2.jpeg")
-plot(gof.id.3b)
-dev.off()
-
-# outdegree - gof
-( gof.od.3b <- sienaGOF(myAttempt3_3b, verbose=TRUE, varName="frd", OutdegreeDistribution,
-     join=T, cumulative=F) )
-jpeg(file = "output/gofod3b_2.jpeg")
-plot(gof.od.3b)
-dev.off()
-
-# triad census - gof
-( gof.tc.3b <- sienaGOF(myAttempt3_3b, verbose=TRUE, varName="frd", TriadCensus,
-     join=T, levls=0:10) )
-jpeg(file = "output/goftc3b_2.jpeg")
-plot(gof.tc.3b)
-dev.off()
-
-# overall behavior distribution - gof
-( gof.behaviour.3b <- sienaGOF(myAttempt3_3b, BehaviorDistribution,
-	verbose=TRUE,join=TRUE,varName="gun") )
-jpeg(file = "output/gofbehaviour3b_2.jpeg")
-plot(gof.behaviour.3b)
-dev.off()
-```

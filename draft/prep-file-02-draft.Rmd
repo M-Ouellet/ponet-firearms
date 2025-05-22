@@ -1,45 +1,39 @@
 ---
-title: "PoNet Firearm Use and Police Friendship Networks"
-subtitle: 'Estimates RSiena models using the XPD data'
-author: ""
-date: "`r Sys.Date()`"
+title: "PoNet Stochastic Actor Oriented Models"
+subtitle: 'This file estimates RSiena models using the PoNet data'
 output:
   html_document:
     toc: true
     number_sections: true
-    toc_depth: 2
-    toc_float: true
-    df_print: paged
-    theme: readable
 ---
 
-```{r setup, include = FALSE}
-# Global chunk options
-knitr::opts_chunk$set(eval = FALSE, message = FALSE, warning = FALSE, echo = TRUE, fig.align = "center")
-```
+\newpage
 
-# Load libraries
+# Data prep
 
+## Load libraries
+
+Load libraries
 ```{r message = FALSE, warning = FALSE}
-library(RSiena)     # siena models
-library(tidyverse)
+library(RSiena)         # siena models
+library(tidyverse)      # data management
 ```
 
-# Load data
+## Load data
 ```{r}
-load("data/net1.RData")
-load("data/net2.RData")
+# master dataframe
 load("data/df.RData")
 
-load("data/frq1.Rdata")
-load("data/yrs1.Rdata")
+# network data
+load("data/net1.RData")
+load("data/net2.RData")
 load("data/net_acad.Rdata")
 load("data/net_asst.Rdata")
 ```
 
-# Prepare Siena objects
+# Prep RSiena objects
 
-## Dependent network objects
+## Create dependent network objects
 
 Convert friend network to dependent network variable
 ```{r}
@@ -47,20 +41,6 @@ Convert friend network to dependent network variable
 frd <- sienaDependent(array(c(net1, net2),
                              dim = c(1584, 1584, 2)))
 
-```
-
-## Dependent behavioral outcomes
-
-Gen dependent behavioral outcome - quantile firearm use (draw + discharge) - 5 categories [0, 1-2, 3-4, 5-10, 11+]
-```{r}
-# gen outcome
-gun.qt <- select(df, gun_qt.1, gun_qt.2)
-
-# convert outcome into matrix
-gun.qt.mat <- as.matrix(gun.qt)
-
-# convert to rSiena object
-gun.qt <- sienaDependent(gun.qt.mat, type = "behavior")
 ```
 
 Gen dependent behavioral outcome - binary firearm discharge
@@ -99,25 +79,35 @@ gun.10.mat <- as.matrix(gun.10)
 gun.10 <- sienaDependent(gun.10.mat, type = "behavior")
 ```
 
+Gen dependent behavioral outcome - quantile firearm use (draw + discharge) - 5 categories [0, 1-2, 3-4, 5-10, 11+]
+```{r}
+# gen outcome
+gun.qt <- select(df, gun_qt.1, gun_qt.2)
 
-## Node-level covariates
+# convert outcome into matrix
+gun.qt.mat <- as.matrix(gun.qt)
+
+# convert to rSiena object
+gun.qt <- sienaDependent(gun.qt.mat, type = "behavior")
+```
+
+## Generate covariates
 
 Identify constant node attributes
 ```{r}
 # t1 value used to predict t1-t2 transition
-# if imputationValues = NULL will impute coCovar as mean
 male   <- df$male.1
 whi    <- df$race_whi.1 
 blk    <- df$race_blk.1
 race   <- df$race
 hisp   <- df$hisp.1
-nyears <- df$acad_yr.1     # convert using survey date? for interpretation
+nyears <- df$acad_yr.1 
 po     <- df$rank_po.1
 pro    <- df$proactive.1  
 street <- df$street.1  
 threat <- df$threat.1
 taser  <- df$taser.1
-nops   <- df$nops          # nops incorporates official records of ops (only self-report if official record missing)
+nops   <- df$nops          
 
 nyears <- as.numeric(as.character(nyears))
 
@@ -135,64 +125,13 @@ taser  <- coCovar(taser)
 nops   <- coCovar(nops)
 ```
 
-## Dyadic covariates
-
 Gen constant dyadic covariates - treat as exogenous dyadic covariates
 ```{r}
-frq <- coDyadCovar(frq1)
-yrs <- coDyadCovar(yrs1)
-
 acad <- coDyadCovar(net_acad)
 asst <- coDyadCovar(net_asst)
 ```
 
-## Build Siena data objects
-
-Gen siena dependent file - gun.qt
-```{r}
-gun.data.qt <- sienaDataCreate(frd = frd, 
-                            gun     = gun.qt,
-                            male    = male,
-                            whi     = whi,
-                            blk     = blk,
-                            race    = race,
-                            hisp    = hisp,
-                            nyears  = nyears,
-                            po      = po,
-                            pro     = pro,
-                            street  = street,
-                            threat  = threat, 
-                            taser   = taser,
-                            nops    = nops,
-                            frq     = frq,
-                            yrs     = yrs,
-                            acad    = acad,
-                            asst    = asst)
-```
-
-Gen siena dependent file - gun.10
-```{r}
-gun.data.10 <- sienaDataCreate(frd  = frd, 
-                            gun     = gun.10,
-                            male    = male,
-                            whi     = whi,
-                            blk     = blk,
-                            race    = race,
-                            hisp    = hisp,
-                            nyears  = nyears,
-                            po      = po,
-                            pro     = pro,
-                            street  = street,
-                            threat  = threat, 
-                            taser   = taser,
-                            nops    = nops,
-                            frq     = frq,
-                            yrs     = yrs,
-                            acad    = acad,
-                            asst    = asst)
-```
-
-Gen siena dependent file - gun.cat
+Gen siena dependent file - gun.cat [firearm use (none = 0, draw = 1, discharge = 2)]
 ```{r}
 gun.data.cat <- sienaDataCreate(frd = frd, 
                             gun     = gun.cat,
@@ -208,13 +147,51 @@ gun.data.cat <- sienaDataCreate(frd = frd,
                             threat  = threat, 
                             taser   = taser,
                             nops    = nops,
-                            frq     = frq,
-                            yrs     = yrs,
                             acad    = acad,
                             asst    = asst)
 ```
 
-Create function to view model output
+Gen siena dependent file - gun.10 [1-10+ firearm-use (draw + discharge)]
+```{r}
+gun.data.10 <- sienaDataCreate(frd  = frd, 
+                            gun     = gun.10,
+                            male    = male,
+                            whi     = whi,
+                            blk     = blk,
+                            race    = race,
+                            hisp    = hisp,
+                            nyears  = nyears,
+                            po      = po,
+                            pro     = pro,
+                            street  = street,
+                            threat  = threat, 
+                            taser   = taser,
+                            nops    = nops,
+                            acad    = acad,
+                            asst    = asst)
+```
+
+Gen siena dependent file - gun.qt [5 categories draw + discharge [0, 1-2, 3-4, 5-10, 11+]]
+```{r}
+gun.data.qt <- sienaDataCreate(frd = frd, 
+                            gun     = gun.qt,
+                            male    = male,
+                            whi     = whi,
+                            blk     = blk,
+                            race    = race,
+                            hisp    = hisp,
+                            nyears  = nyears,
+                            po      = po,
+                            pro     = pro,
+                            street  = street,
+                            threat  = threat, 
+                            taser   = taser,
+                            nops    = nops,
+                            acad    = acad,
+                            asst    = asst)
+```
+
+Create functions to view model output
 ```{r}
 outTable <- function(x) {
 	coef <- x$theta
@@ -238,13 +215,15 @@ outTable <- function(x) {
 }
 ```
 
+\newpage
+
 # Model specification
 
-## Model 1a - avAlt firearm use 5 categories [0, 1-2, 3-4, 5-10, 11+]
-Structural and behavioral effects - gun.data.qt - avAlt
+## Model 1a - firearm-use (none = 0, draw = 1, discharge = 2) - avAlt
+gun.data.cat
 ```{r}
 # create a model specification object for the data
-myEffects1a <- getEffects(gun.data.qt)
+myEffects1a <- getEffects(gun.data.cat)
 myEffects1a
 
 # inspect all possible effects
@@ -280,7 +259,6 @@ myEffects1a <- includeEffects(myEffects1a, sameX, interaction1 = "race",   name 
 
 # add structural effects as control variables
 myEffects1a <- includeEffects(myEffects1a, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-# myEffects1a <- includeInteraction(myEffects1a, gwespFF, recip)
 
 # behavioral effects - peer effects
 myEffects1a <- includeEffects(myEffects1a, avAlt, name = "gun", interaction1 = "frd")
@@ -297,15 +275,15 @@ myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 =
 myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "taser")
 myEffects1a <- includeEffects(myEffects1a, effFrom, name = "gun", interaction1 = "nops")
 
-# Full model specification looks like this now:
+# view full model specification
 myEffects1a
 ```
 
-## Model 1b - avSim firearm use 5 categories [0, 1-2, 3-4, 5-10, 11+]
-Structural and behavioral effects - gun.data.qt - avSim
+## Model 1b - firearm-use (none = 0, draw = 1, discharge = 2) - avSim
+gun.data.cat
 ```{r}
 # create a model specification object for the data
-myEffects1b <- getEffects(gun.data.qt)
+myEffects1b <- getEffects(gun.data.cat)
 myEffects1b
 
 # inspect all possible effects
@@ -341,7 +319,6 @@ myEffects1b <- includeEffects(myEffects1b, sameX, interaction1 = "race",   name 
 
 # add structural effects as control variables
 myEffects1b <- includeEffects(myEffects1b, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-# myEffects1b <- includeInteraction(myEffects1b, gwespFF, recip)
 
 # behavioral effects - peer effects
 myEffects1b <- includeEffects(myEffects1b, avSim, name = "gun", interaction1 = "frd")
@@ -358,13 +335,12 @@ myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 =
 myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "taser")
 myEffects1b <- includeEffects(myEffects1b, effFrom, name = "gun", interaction1 = "nops")
 
-# Full model specification looks like this now:
+# view full model specification
 myEffects1b
 ```
 
-
-## Model 2a - avAlt firearm use 1-10+ firearm-use (draw + discharge)
-Structural and behavioral effects - gun.data.10 - avAlt
+## Model 2a - firearm-use (1-10+ draw + discharge) - avAlt
+gun.data.10
 ```{r}
 # create a model specification object for the data
 myEffects2a <- getEffects(gun.data.10)
@@ -386,7 +362,6 @@ myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "po",     name =
 myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "whi",    name = "frd")
 myEffects2a <- includeEffects(myEffects2a, egoX, interaction1 = "blk",    name = "frd")
 
-
 # test for alter effects
 myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "gun",    name = "frd")
 myEffects2a <- includeEffects(myEffects2a, altX, interaction1 = "male",   name = "frd")
@@ -404,7 +379,6 @@ myEffects2a <- includeEffects(myEffects2a, sameX, interaction1 = "race",   name 
 
 # add structural effects as control variables
 myEffects2a <- includeEffects(myEffects2a, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-# myEffects2a <- includeInteraction(myEffects2a, gwespFF, recip)
 
 # behavioral effects - peer effects
 myEffects2a <- includeEffects(myEffects2a, avAlt, name = "gun", interaction1 = "frd")
@@ -421,12 +395,12 @@ myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 =
 myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "taser")
 myEffects2a <- includeEffects(myEffects2a, effFrom, name = "gun", interaction1 = "nops")
 
-# Full model specification looks like this now:
+# view full model specification
 myEffects2a
 ```
 
-## Model 2b - avSim firearm use 1-10+ firearm-use (draw + discharge)
-Structural and behavioral effects - gun.data.10 - avSim
+## Model 2b - firearm-use (1-10+ draw + discharge) - avSim
+gun.data.10
 ```{r}
 # create a model specification object for the data
 myEffects2b <- getEffects(gun.data.10)
@@ -465,7 +439,6 @@ myEffects2b <- includeEffects(myEffects2b, sameX, interaction1 = "race",   name 
 
 # add structural effects as control variables
 myEffects2b <- includeEffects(myEffects2b, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-# myEffects2b <- includeInteraction(myEffects2b, gwespFF, recip)
 
 # behavioral effects - peer effects
 myEffects2b <- includeEffects(myEffects2b, avSim, name = "gun", interaction1 = "frd")
@@ -482,15 +455,15 @@ myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 =
 myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "taser")
 myEffects2b <- includeEffects(myEffects2b, effFrom, name = "gun", interaction1 = "nops")
 
-# Full model specification looks like this now:
+# view full model specification
 myEffects2b
 ```
 
-## Model 3a - avAlt firearm use (none = 0, draw = 1, discharge = 2)
-Structural and behavioral effects - gun.data.cat - avAlt
+## Model 3a - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avAlt
+gun.data.qt
 ```{r}
 # create a model specification object for the data
-myEffects3a <- getEffects(gun.data.cat)
+myEffects3a <- getEffects(gun.data.qt)
 myEffects3a
 
 # inspect all possible effects
@@ -509,7 +482,6 @@ myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "po",     name =
 myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "whi",    name = "frd")
 myEffects3a <- includeEffects(myEffects3a, egoX, interaction1 = "blk",    name = "frd")
 
-
 # test for alter effects
 myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "gun",    name = "frd")
 myEffects3a <- includeEffects(myEffects3a, altX, interaction1 = "male",   name = "frd")
@@ -527,7 +499,6 @@ myEffects3a <- includeEffects(myEffects3a, sameX, interaction1 = "race",   name 
 
 # add structural effects as control variables
 myEffects3a <- includeEffects(myEffects3a, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-# myEffects3a <- includeInteraction(myEffects3a, gwespFF, recip)
 
 # behavioral effects - peer effects
 myEffects3a <- includeEffects(myEffects3a, avAlt, name = "gun", interaction1 = "frd")
@@ -544,15 +515,15 @@ myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 =
 myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "taser")
 myEffects3a <- includeEffects(myEffects3a, effFrom, name = "gun", interaction1 = "nops")
 
-# Full model specification looks like this now:
+# view full model specification
 myEffects3a
 ```
 
-## Model 3b - avSim firearm use (none = 0, draw = 1, discharge = 2)
-Structural and behavioral effects - gun.data.cat - avSim
+## Model 3b - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avSim
+gun.data.qt
 ```{r}
 # create a model specification object for the data
-myEffects3b <- getEffects(gun.data.cat)
+myEffects3b <- getEffects(gun.data.qt)
 myEffects3b
 
 # inspect all possible effects
@@ -588,7 +559,6 @@ myEffects3b <- includeEffects(myEffects3b, sameX, interaction1 = "race",   name 
 
 # add structural effects as control variables
 myEffects3b <- includeEffects(myEffects3b, density, gwespFF, gwdspFF, inPopSqrt, outActSqrt, name = "frd")
-# myEffects3b <- includeInteraction(myEffects3b, gwespFF, recip)
 
 # behavioral effects - peer effects
 myEffects3b <- includeEffects(myEffects3b, avSim, name = "gun", interaction1 = "frd")
@@ -605,172 +575,143 @@ myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 =
 myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "taser")
 myEffects3b <- includeEffects(myEffects3b, effFrom, name = "gun", interaction1 = "nops")
 
-# Full model specification looks like this now:
+# view full model specification
 myEffects3b
 ```
 
-# Fit models
+\newpage
 
-## Model 1a - avAlt firearm use 5 categories [0, 1-2, 3-4, 5-10, 11+]
-Structural effects and behavioral effects - gun.data.qt - avAlt
-```{r}
-# Create an object with settings to tune the estimation algorithm:
-# Using the same project name as above will append the results to that file
+# Model estimation
+
+## Model 1a - firearm-use (none = 0, draw = 1, discharge = 2) - avAlt
+```{r, eval = FALSE}
+# create an object with settings to tune the estimation algorithm:
 modelOptions1a <- sienaAlgorithmCreate(
-	projname ='gun.data.qt', MaxDegree = c(frd = 10),  
+	projname ='gun.data.cat', MaxDegree = c(frd = 10),  
 	doubleAveraging = 0, diagonalize = .2)  
-# Error in x$FRAN(zsmall, xsmall) : 
-#  Unlikely to terminate this epoch:  more than 1000000 steps
 
-# Estimate the model, you can decrease estimation time by 
-# using more processors with the options commented out below
-myResults1a <- siena07(modelOptions1a, data = gun.data.qt,
+# estimate the model
+myResults1a <- siena07(modelOptions1a, data = gun.data.cat,
 	effects = myEffects1a, batch = FALSE, verbose = FALSE, returnDeps = TRUE
-    )    # if multiple processors desired, comment out this line and run the next
-# , initC=T, useCluster=TRUE, nbrNodes=3) # replace "3" with your number of processors-1
+    ) 
 
-myResults1a         # brief report of results
+# report the results
+myResults1a         
 
 # examine results
 outTable(myResults1a)
 
 # assign final estimates to myres
-model1 <- myResults1a
+model1a <- myResults1a
 
 # obtain results in html format
 xtable(myResults1a, file="model1a.htm", type="html", digits = 3)
-#xtable(myAttempt2_1a, file="model1a_2.htm", type="html", digits = 3)
-
-# save fitted Siena model
-save(myResults1a, file = "data/siena_results_firearm_xpd_1a.RData")
 ```
 
 GOF Model 1a 
-```{r}
+```{r, eval = FALSE}
 # indegree - gof
-( gof.id.1a <- sienaGOF(myAttempt2_1a, verbose=TRUE, varName="frd", IndegreeDistribution,
+( gof.id.1a <- sienaGOF(myResults1a, verbose=TRUE, varName="frd", IndegreeDistribution,
      join=T, cumulative=F) )
-jpeg(file = "output/gofid1a_2.jpeg")
+jpeg(file = "output/gofid1a.jpeg")
 plot(gof.id.1a)
 dev.off()
 
 # outdegree - gof
-( gof.od.1a <- sienaGOF(myAttempt2_1a, verbose=TRUE, varName="frd", OutdegreeDistribution,
+( gof.od.1a <- sienaGOF(myResults1a, verbose=TRUE, varName="frd", OutdegreeDistribution,
      join=T, cumulative=F) )
-jpeg(file = "output/gofod1a_2.jpeg")
+jpeg(file = "output/gofod1a.jpeg")
 plot(gof.od.1a)
 dev.off()
 
 # triad census - gof
-( gof.tc.1a <- sienaGOF(myAttempt2_1a, verbose=TRUE, varName="frd", TriadCensus,
+( gof.tc.1a <- sienaGOF(myResults1a, verbose=TRUE, varName="frd", TriadCensus,
      join=T, levls=0:10) )
-jpeg(file = "output/goftc1a_2.jpeg")
+jpeg(file = "output/goftc1a.jpeg")
 plot(gof.tc.1a)
 dev.off()
 
 # overall behavior distribution - gof
-( gof.behaviour.1a <- sienaGOF(myAttempt2_1a, BehaviorDistribution,
+( gof.behaviour.1a <- sienaGOF(myResults1a, BehaviorDistribution,
 	verbose=TRUE,join=TRUE,varName="gun") )
-jpeg(file = "output/gofbehaviour1a_2.jpeg")
+jpeg(file = "output/gofbehaviour1a.jpeg")
 plot(gof.behaviour.1a)
 dev.off()
 ```
 
-## Model 1b - avSim firearm use 5 categories [0, 1-2, 3-4, 5-10, 11+]
-Structural effects and behavioral effects - gun.data.qt - avSim
-```{r}
+## Model 1b - firearm-use (none = 0, draw = 1, discharge = 2) - avSim
+```{r, eval = FALSE}
 # Create an object with settings to tune the estimation algorithm:
-# Using the same project name as above will append the results to that file
 modelOptions1b <- sienaAlgorithmCreate(
-	projname ='gun.data.qt', MaxDegree = c(frd = 10),  
+	projname ='gun.data.cat', MaxDegree = c(frd = 10),  
 	doubleAveraging = 0, diagonalize = .2)  
-# Error in x$FRAN(zsmall, xsmall) : 
-#  Unlikely to terminate this epoch:  more than 1000000 steps
 
-
-# Estimate the model, you can decrease estimation time by 
-# using more processors with the options commented out below
-myResults1b <- siena07(modelOptions1b, data = gun.data.qt,
+# estimate the model
+myResults1b <- siena07(modelOptions1b, data = gun.data.cat,
 	effects = myEffects1b, batch = FALSE, verbose = FALSE, returnDeps = TRUE
-    )    # if multiple processors desired, comment out this line and run the next
-# , initC=T, useCluster=TRUE, nbrNodes=3) # replace "3" with your number of processors-1
+    )  
 
-myResults1b         # brief report of results
-
-# diagnostic checks
-# If 'Overall maximum convergence ratio' is greater than .25 rerun the model
-# and use previous estimates as starting values (prevAns option)
-myAttempt2_1b <- siena07(modelOptions1b, data = gun.data.qt, effects = myEffects1b, prevAns = myResults1b, returnDeps = TRUE)
-# To identify troublesome effects, look for high 'Convergence t-ratios' (>.1b) 
+# report the results
+myResults1b 
 
 # examine results
 outTable(myResults1b)
 
 # assign final estimates to myres
-model1 <- myResults1b
+model1b <- myResults1b
 
 # obtain results in html format
 xtable(myResults1b, file="model1b.htm", type="html", digits = 3)
-xtable(myAttempt2_1b, file="model1b_2.htm", type="html", digits = 3)
 ```
 
 GOF Model 1b 
-```{r}
+```{r, eval = FALSE}
 # indegree - gof
-( gof.id.1b <- sienaGOF(myAttempt2_1b, verbose=TRUE, varName="frd", IndegreeDistribution,
+( gof.id.1b <- sienaGOF(myResults1b, verbose=TRUE, varName="frd", IndegreeDistribution,
      join=T, cumulative=F) )
-jpeg(file = "output/gofid1b_2.jpeg")
+jpeg(file = "output/gofid1b.jpeg")
 plot(gof.id.1b)
 dev.off()
 
 # outdegree - gof
-( gof.od.1b <- sienaGOF(myAttempt2_1b, verbose=TRUE, varName="frd", OutdegreeDistribution,
+( gof.od.1b <- sienaGOF(myResults1b, verbose=TRUE, varName="frd", OutdegreeDistribution,
      join=T, cumulative=F) )
-jpeg(file = "output/gofod1b_2.jpeg")
+jpeg(file = "output/gofod1b.jpeg")
 plot(gof.od.1b)
 dev.off()
 
 # triad census - gof
-( gof.tc.1b <- sienaGOF(myAttempt2_1b, verbose=TRUE, varName="frd", TriadCensus,
+( gof.tc.1b <- sienaGOF(myResults1b, verbose=TRUE, varName="frd", TriadCensus,
      join=T, levls=0:10) )
-jpeg(file = "output/goftc1b_2.jpeg")
+jpeg(file = "output/goftc1b.jpeg")
 plot(gof.tc.1b)
 dev.off()
 
 # overall behavior distribution - gof
-( gof.behaviour.1b <- sienaGOF(myAttempt2_1b, BehaviorDistribution,
+( gof.behaviour.1b <- sienaGOF(myResults1b, BehaviorDistribution,
 	verbose=TRUE,join=TRUE,varName="gun") )
-jpeg(file = "output/gofbehaviour1b_2.jpeg")
+jpeg(file = "output/gofbehaviour1b.jpeg")
 plot(gof.behaviour.1b)
 dev.off()
 ```
 
-## Model 2a - avAlt firearm use 1-10+ firearm-use (draw + discharge)
-Structural effects and behavioral effects - gun.data.10 - avAlt
-```{r}
+## Model 2a - firearm-use (1-10+ draw + discharge) - avAlt 
+gun.data.10 Does not converge
+```{r, eval = FALSE}
 # Create an object with settings to tune the estimation algorithm:
-# Using the same project name as above will append the results to that file
 # modelOptions2a <- sienaAlgorithmCreate(
 #	projname ='gun.data.10', MaxDegree = c(frd = 10),  
 #	doubleAveraging = 0, diagonalize = .2)  
-# Error in x$FRAN(zsmall, xsmall) : 
-#  Unlikely to terminate this epoch:  more than 1000000 steps
 
 
-# Estimate the model, you can decrease estimation time by 
-# using more processors with the options commented out below
+# Estimate the model
 # myResults2a <- siena07(modelOptions2a, data = gun.data.10,
 #	effects = myEffects2a, batch = FALSE, verbose = FALSE, returnDeps = TRUE
 #    )    # if multiple processors desired, comment out this line and run the next
 # , initC=T, useCluster=TRUE, nbrNodes=3) # replace "3" with your number of processors-1
 
-#myResults2a         # brief report of results
-
-# diagnostic checks
-# If 'Overall maximum convergence ratio' is greater than .25 rerun the model
-# and use previous estimates as starting values (prevAns option)
-#myAttempt2_1 <- siena07(modelOptions1, data = gun.data, effects = myEffects2a, prevAns = myResults2a, returnDeps = TRUE)
-# To identify troublesome effects, look for high 'Convergence t-ratios' (>.2a) 
+# report the results
+#myResults2a 
 
 # examine fuller report of results (shows score tests)
 # summary(myResults2a)
@@ -779,14 +720,14 @@ Structural effects and behavioral effects - gun.data.10 - avAlt
 #outTable(myResults2a)
 
 # assign final estimates to myres
-#model1 <- myResults2a
+#model2a <- myResults2a
 
 # obtain results in html format
 #xtable(myResults2a, file="model2a.htm", type="html", digits = 3)
 ```
 
 GOF Model 2a 
-```{r}
+```{r, eval = FALSE}
 # indegree - gof
 #( gof.id.2a <- sienaGOF(myResults2a, verbose=TRUE, varName="frd", IndegreeDistribution,
 #     join=T, cumulative=F) )
@@ -816,32 +757,22 @@ GOF Model 2a
 #dev.off()
 ```
 
-## Model 2b - avSim firearm use 1-10+ firearm-use (draw + discharge)
-Structural effects and behavioral effects - gun.data.10 - avSim
-```{r}
+## Model 2b - firearm-use (1-10+ draw + discharge) - avSim
+gun.data.10 Does not converge
+```{r, eval = FALSE}
 # Create an object with settings to tune the estimation algorithm:
-# Using the same project name as above will append the results to that file
 #modelOptions2b <- sienaAlgorithmCreate(
 #	projname ='gun.data.10', MaxDegree = c(frd = 10),  
 #	doubleAveraging = 0, diagonalize = .2)  
-# Error in x$FRAN(zsmall, xsmall) : 
-#  Unlikely to terminate this epoch:  more than 1000000 steps
 
-
-# Estimate the model, you can decrease estimation time by 
-# using more processors with the options commented out below
+# Estimate the model
 #myResults2b <- siena07(modelOptions2b, data = gun.data.10,
 #	effects = myEffects2b, batch = FALSE, verbose = FALSE, returnDeps = TRUE
 #    )    # if multiple processors desired, comment out this line and run the next
 # , initC=T, useCluster=TRUE, nbrNodes=3) # replace "3" with your number of processors-1
 
-#myResults2b         # brief report of results
-
-# diagnostic checks
-# If 'Overall maximum convergence ratio' is greater than .25 rerun the model
-# and use previous estimates as starting values (prevAns option)
-#myAttempt2_1 <- siena07(modelOptions1, data = gun.data, effects = myEffects2b, prevAns = myResults2b, returnDeps = TRUE)
-# To identify troublesome effects, look for high 'Convergence t-ratios' (>.2b) 
+# report results
+#myResults2b 
 
 # examine fuller report of results (shows score tests)
 # summary(myResults2b)
@@ -857,7 +788,7 @@ Structural effects and behavioral effects - gun.data.10 - avSim
 ```
 
 GOF Model 2b 
-```{r}
+```{r, eval = FALSE}
 # indegree - gof
 #( gof.id.2b <- sienaGOF(myResults2b, verbose=TRUE, varName="frd", IndegreeDistribution,
 #     join=T, cumulative=F) )
@@ -887,39 +818,34 @@ GOF Model 2b
 #dev.off()
 ```
 
-## Model 3a - avAlt firearm use (none = 0, draw = 1, discharge = 2)
-Structural effects and behavioral effects - gun.data.cat - avAlt
-```{r}
-# Create an object with settings to tune the estimation algorithm:
-# Using the same project name as above will append the results to that file
+## Model 3a - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avAlt
+```{r, eval = FALSE}
+# create an object with settings to tune the estimation algorithm:
 modelOptions3a <- sienaAlgorithmCreate(
-	projname ='gun.data.cat', MaxDegree = c(frd = 10),  
+	projname ='gun.data.qt', MaxDegree = c(frd = 10),  
 	doubleAveraging = 0, diagonalize = .2)  
-# Error in x$FRAN(zsmall, xsmall) : 
-#  Unlikely to terminate this epoch:  more than 1000000 steps
 
-
-# Estimate the model, you can decrease estimation time by 
-# using more processors with the options commented out below
-myResults3a <- siena07(modelOptions3a, data = gun.data.cat,
+# estimate the model
+myResults3a <- siena07(modelOptions3a, data = gun.data.qt,
 	effects = myEffects3a, batch = FALSE, verbose = FALSE, returnDeps = TRUE
-#    )    # if multiple processors desired, comment out this line and run the next
- , initC=T, useCluster=TRUE, nbrNodes=10) # replace "3" with your number of processors-1
+    ) 
 
-myResults3a         # brief report of results
+# report results
+myResults3a 
 
 # examine results
 outTable(myResults3a)
 
 # assign final estimates to myres
-model1 <- myResults3a
+model3a <- myResults3a
 
 # obtain results in html format
 xtable(myResults3a, file="model3a.htm", type="html", digits = 3)
+# xtable(myAttempt2_3a, file="model3a_2.htm", type="html", digits = 3)
 ```
 
 GOF Model 3a 
-```{r}
+```{r, eval = FALSE}
 # indegree - gof
 ( gof.id.3a <- sienaGOF(myResults3a, verbose=TRUE, varName="frd", IndegreeDistribution,
      join=T, cumulative=F) )
@@ -947,199 +873,78 @@ dev.off()
 jpeg(file = "output/gofbehaviour3a.jpeg")
 plot(gof.behaviour.3a)
 dev.off()
-
-# ego-by-alter table for gun scores
-( gof.EgoAlterTable.3a <- sienaGOF(myResults3a,EgoAlterTable,
-	verbose=TRUE,join=TRUE,varName=c("frd","gun")) )
-jpeg(file = "output/gofegoalter3a.jpeg")
-plot(gof.EgoAlterTable.3a,center=TRUE,scale=TRUE)	
 ```
 
-## Model 3b - avSim firearm use (none = 0, draw = 1, discharge = 2)
-Structural effects and behavioral effects - gun.data.cat - avSim
-```{r}
-# Create an object with settings to tune the estimation algorithm:
-# Using the same project name as above will append the results to that file
+## Model 3b - firearm-use ([0, 1-2, 3-4, 5-10, 11+] draw + discharge) - avSim
+```{r, eval = FALSE}
+# create an object with settings to tune the estimation algorithm:
 modelOptions3b <- sienaAlgorithmCreate(
-	projname ='gun.data.cat', MaxDegree = c(frd = 10),  
-	doubleAveraging = 0, diagonalize = .2)  
-# Error in x$FRAN(zsmall, xsmall) : 
-#  Unlikely to terminate this epoch:  more than 1000000 steps
+	projname ='gun.data.qt', MaxDegree = c(frd = 10),  
+	doubleAveraging = 0, diagonalize = .2) 
 
-
-# Estimate the model, you can decrease estimation time by 
-# using more processors with the options commented out below
-myResults3b <- siena07(modelOptions3b, data = gun.data.cat,
+# estimate the model
+myResults3b <- siena07(modelOptions3b, data = gun.data.qt,
 	effects = myEffects3b, batch = FALSE, verbose = FALSE, returnDeps = TRUE
-    )    # if multiple processors desired, comment out this line and run the next
-# , initC=T, useCluster=TRUE, nbrNodes=3) # replace "3" with your number of processors-1
+    )  
 
-myResults3b         # brief report of results
-
+# report the results
+myResults3b    
 # diagnostic checks
 # If 'Overall maximum convergence ratio' is greater than .25 rerun the model
 # and use previous estimates as starting values (prevAns option)
-myAttempt2_3b <- siena07(modelOptions3b, data = gun.data.cat, effects = myEffects3b, prevAns = myResults3b, returnDeps = TRUE)
-# To identify troublesome effects, look for high 'Convergence t-ratios' (>.1) 
+# myAttempt2_3b <- siena07(modelOptions3b, data = gun.data.qt, effects = myEffects3b, prevAns = myResults3b, returnDeps = TRUE)
+# To identify troublesome effects, look for high 'Convergence t-ratios' (>.3b) 
+
+# gen algorithm to improve model fit
+ m3b_algo <- sienaAlgorithmCreate(projname = 'm3b_algo',diagonalize = 0.4, doubleAveraging = 0, n3=10000)
+# (ans <- siena07(m3b_algo, data = gun.data.qt, effects = myEffects3b, prevAns = myResults3b))
+myAttempt3_3b <- siena07(m3b_algo, data=gun.data.qt, effects=myEffects3b, prevAns= myResults3b, batch=FALSE, returnDeps = TRUE)
 
 # examine fuller report of results (shows score tests)
 # summary(myResults3b)
+# summary(myAttempt2_3b)
 
 # examine results
 outTable(myResults3b)
-outTable(myAttempt2_3b)
+# outTable(myAttempt2_3b)
+outTable(myAttempt3_3b)
 
 # assign final estimates to myres
-model1 <- myResults3b
+model3b <- myResults3b
 
 # obtain results in html format
-xtable(myAttempt2_3b, file="model3b_2.htm", type="html", digits = 3)
 xtable(myResults3b, file="model3b.htm", type="html", digits = 3)
+xtable(myAttempt2_3b, file="model3b_2.htm", type="html", digits = 3)
+xtable(myAttempt3_3b, file="model3b_3.htm", type="html", digits = 3)
 ```
 
 GOF Model 3b 
-```{r}
+```{r, eval = FALSE}
 # indegree - gof
-( gof.id.3b <- sienaGOF(myAttempt2_3b, verbose=TRUE, varName="frd", IndegreeDistribution,
+( gof.id.3b <- sienaGOF(myAttempt3_3b, verbose=TRUE, varName="frd", IndegreeDistribution,
      join=T, cumulative=F) )
-jpeg(file = "output/gofid3b.jpeg")
+jpeg(file = "output/gofid3b_2.jpeg")
 plot(gof.id.3b)
 dev.off()
 
 # outdegree - gof
-( gof.od.3b <- sienaGOF(myAttempt2_3b, verbose=TRUE, varName="frd", OutdegreeDistribution,
+( gof.od.3b <- sienaGOF(myAttempt3_3b, verbose=TRUE, varName="frd", OutdegreeDistribution,
      join=T, cumulative=F) )
-jpeg(file = "output/gofod3b.jpeg")
+jpeg(file = "output/gofod3b_2.jpeg")
 plot(gof.od.3b)
 dev.off()
 
 # triad census - gof
-( gof.tc.3b <- sienaGOF(myAttempt2_3b, verbose=TRUE, varName="frd", TriadCensus,
+( gof.tc.3b <- sienaGOF(myAttempt3_3b, verbose=TRUE, varName="frd", TriadCensus,
      join=T, levls=0:10) )
-jpeg(file = "output/goftc3b.jpeg")
+jpeg(file = "output/goftc3b_2.jpeg")
 plot(gof.tc.3b)
 dev.off()
 
 # overall behavior distribution - gof
-( gof.behaviour.3b <- sienaGOF(myAttempt2_3b, BehaviorDistribution,
+( gof.behaviour.3b <- sienaGOF(myAttempt3_3b, BehaviorDistribution,
 	verbose=TRUE,join=TRUE,varName="gun") )
-jpeg(file = "output/gofbehaviour3b.jpeg")
+jpeg(file = "output/gofbehaviour3b_2.jpeg")
 plot(gof.behaviour.3b)
 dev.off()
 ```
-
-# Calculate the relative importance of effects 
-(model 1a - gun use quartiles avAlt only)
-
-Examine the relative importance of each effect (all effects)
-adapated from https://robfranken.net/Strava/RI.html
-```{r}
-# Load the saved Siena model results
-ans    <-  myAttempt2_1a
-mydata <-  gun.data.qt
-
-# confirm that ans is stored as sienaFit object
-class(myAttempt2_1a)
-
-# extract relative importance
-RI <- RSiena:::`sienaRI`(mydata, ans)
-
-# extract RI for the friend and behavior dynamics
-RI_frd <- RI[[1]]
-RI_beh <- RI[[2]]
-  
-# take the statistics for time t1
-t = 1
-RI_beh1 <- RI_beh$expectedRI[[t]]
-RI_frd1 <- RI_frd$expectedRI[[t]]
-
-# take the statistics for time t2
-t = 2
-RI_beh2 <- RI_beh$expectedRI[[t]]
-RI_frd2 <- RI_frd$expectedRI[[t]]
-
-# convert to dataframe
-RI_beh1 <- as.data.frame(RI_beh1)
-RI_beh2 <- as.data.frame(RI_beh2)
-RI_frd1 <- as.data.frame(RI_frd1)
-RI_frd2 <- as.data.frame(RI_frd2)
-
-RI_frd$effectNames
-RI_beh$effectNames
-```
-
-Examine the relative importance of the effects that we are interested in - friend
-adapated from https://robfranken.net/Strava/RI.html
-```{r}
-# only effects we are interested in
-myeff.eval <- ans$effects[ans$effects$type[ans$effects$include]=="eval",]  # extract effects eval
-theta.eval <- ans$theta[ans$effects$type[ans$effects$include]=="eval"]     # extract thetas eval
-theta.eval.frd <- theta.eval[c(1, 7, 8, 25)]                               # outdegree, acad, asst, gun similarity 
-myeff.eval.frd <- myeff.eval[c(1, 7, 8, 25), ] 
-
-# algorithm used
-myalgo <- sienaAlgorithmCreate(projname = "test", nsub=5, n3=5000 )
-
-# calculate relative influence effects
-RI_frd_trunc <- RSiena:::`sienaRI`(
-     data = mydata,
-     theta = theta.eval.frd,
-     algorithm = myalgo,
-     effects = myeff.eval.frd)
-
-# extract RI for the friend and behavior dynamics
-RI_frd <- RI_frd_trunc[[1]]
-  
-# extract the statistics across both time periods
-t = 1
-RI_frd1_trunc <- RI_frd_trunc$expectedRI[[t]]
-t = 2
-RI_frd2_trunc <- RI_frd_trunc$expectedRI[[t]]
-
-# convert to dataframe
-RI_frd1_trunc <- as.data.frame(RI_frd1_trunc)
-RI_frd2_trunc <- as.data.frame(RI_frd2_trunc)
-
-# colors for pie chart 
-color <- brewer.pal(5, "Set2")
-
-fit_summary <- summary(myResults1a_xpd)
-str(fit_summary)
-
-```
-
-Examine the relative importance of the effects that we are interested in - behavior
-adapated from https://robfranken.net/Strava/RI.html
-```{r}
-# only effects we are interested in
-myeff.eval <- ans$effects[ans$effects$type[ans$effects$include]=="eval",]  # extract effects eval
-theta.eval <- ans$theta[ans$effects$type[ans$effects$include]=="eval"]     # extract thetas eval
-theta.eval.beh <- theta.eval[c(1, 30, 35, 36, 37, 38)]                     # avalt effect, academy year, rank officer,  pro, street
-myeff.eval.beh <- myeff.eval[c(1, 30, 35, 36, 37, 38), ] 
-
-# algorithm used
-myalgo <- sienaAlgorithmCreate(projname = "test", nsub=5, n3=5000 )
-
-# calculate relative influence effects
-RI_beh_trunc <- RSiena:::`sienaRI`(
-     data = mydata,
-     theta = theta.eval.beh,
-     algorithm = myalgo,
-     effects = myeff.eval.beh)
-
-# extract RI for the friend and behavior dynamics
-RI_beh <- RI_beh_trunc[[1]]
-  
-# extract the statistics across both time periods
-t = 1
-RI_beh1_trunc <- RI_beh_trunc$expectedRI[[t]]
-t = 2
-RI_beh2_trunc <- RI_beh_trunc$expectedRI[[t]]
-
-# convert to dataframe
-RI_beh1_trunc <- as.data.frame(RI_beh1_trunc)
-RI_beh2_trunc <- as.data.frame(RI_beh2_trunc)
-
-```
-
-
