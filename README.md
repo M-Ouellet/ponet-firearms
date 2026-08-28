@@ -1,5 +1,5 @@
 This GitHub repository provides the prep files to replicate the quantitative analysis in the paper entitled, 
-"Firearms, peers, and policing: The role of informal networks on law enforcement gun use". published in Justice Quarterly. Available here https://doi.org/10.1080/07418825.2025.2520545
+"The Influence of Workplace Friendships on Police Firearm Use". published in _Justice Quarterly_. Available here https://doi.org/10.1080/07418825.2025.2520545
 
 The two R Markdown files provide the code to:
 
